@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchIceCreamNews } from "@/lib/rss";
 import { generatePost } from "@/lib/comment";
-import { postTweet } from "@/lib/x-client";
+import { postTweet, uploadImageToX } from "@/lib/x-client";
 import { isAlreadyPosted, markAsPosted } from "@/lib/store";
 
 // 1回のCron実行で投稿する最大件数（レート制限対策）
@@ -58,8 +58,21 @@ export async function GET(request: NextRequest) {
         const postText = await generatePost(article);
         console.log(`生成された投稿文:\n${postText}\n`);
 
-        // X APIで投稿
-        const result = await postTweet(postText);
+        // 画像がある場合はアップロード
+        let mediaIds: string[] | undefined;
+        if (article.imageUrl) {
+          console.log(`画像アップロード: ${article.imageUrl}`);
+          const mediaId = await uploadImageToX(article.imageUrl);
+          if (mediaId) {
+            mediaIds = [mediaId];
+            console.log(`画像アップロード成功: ${mediaId}`);
+          } else {
+            console.log("画像アップロード失敗、テキストのみで投稿");
+          }
+        }
+
+        // X APIで投稿（画像があれば添付）
+        const result = await postTweet(postText, mediaIds);
 
         if (result.success) {
           await markAsPosted(article.guid);

@@ -6,6 +6,51 @@ export interface PressRelease {
   link: string;
   pubDate: string;
   guid: string;
+  imageUrl?: string;
+}
+
+/**
+ * RSSのcontent内から画像URLを抽出する
+ * PR TIMESのRSSにはHTMLコンテンツ内に画像が含まれる
+ */
+function extractImageFromContent(content: string): string | undefined {
+  // <img src="..."> からURLを抽出
+  const imgMatch = content.match(/<img[^>]+src=["']([^"']+)["']/i);
+  if (imgMatch?.[1]) return imgMatch[1];
+
+  // <enclosure url="..."> からURLを抽出
+  const encMatch = content.match(/<enclosure[^>]+url=["']([^"']+)["']/i);
+  if (encMatch?.[1]) return encMatch[1];
+
+  return undefined;
+}
+
+/**
+ * プレスリリースページからog:image を取得するフォールバック
+ */
+async function fetchOgImage(url: string): Promise<string | undefined> {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "IceCreamBot/1.0" },
+    });
+    const html = await res.text();
+    // og:image メタタグからURLを抽出
+    const ogMatch = html.match(
+      /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i
+    );
+    if (ogMatch?.[1]) return ogMatch[1];
+
+    // 逆順パターン: content が先に来る場合
+    const ogMatch2 = html.match(
+      /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i
+    );
+    if (ogMatch2?.[1]) return ogMatch2[1];
+
+    return undefined;
+  } catch {
+    console.error(`og:image取得失敗: ${url}`);
+    return undefined;
+  }
 }
 
 // 大手アイスメーカー＋コンビニの企業別RSSフィード
@@ -69,12 +114,19 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
 
         if (isRelevant) {
           seenGuids.add(guid);
+          // RSSコンテンツから画像URLを抽出
+          const imageUrl =
+            (item as Record<string, unknown>)["media:content"]?.toString() ||
+            extractImageFromContent(item.content || "") ||
+            (item.enclosure as { url?: string })?.url;
+
           allItems.push({
             title: item.title || "",
             description: (item.contentSnippet || item.content || "").slice(0, 300),
             link: item.link || "",
             pubDate: item.pubDate || item.isoDate || new Date().toISOString(),
             guid,
+            imageUrl,
           });
         }
       }
@@ -111,12 +163,18 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
 
           if (isRelevant) {
             seenGuids.add(guid);
+            const fbImageUrl =
+              (item as Record<string, unknown>)["media:content"]?.toString() ||
+              extractImageFromContent(item.content || "") ||
+              (item.enclosure as { url?: string })?.url;
+
             allItems.push({
               title: item.title || "",
               description: (item.contentSnippet || item.content || "").slice(0, 300),
               link: item.link || "",
               pubDate: item.pubDate || item.isoDate || new Date().toISOString(),
               guid,
+              imageUrl: fbImageUrl,
             });
           }
         }
@@ -125,6 +183,14 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
         const fbMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
         console.error(`フォールバックも失敗: ${fbMsg}`);
       }
+    }
+  }
+
+  // RSSから画像が取れなかった記事は、プレスリリースページからog:imageを取得
+  for (const item of allItems) {
+    if (!item.imageUrl && item.link) {
+      console.log(`og:image取得: ${item.link}`);
+      item.imageUrl = await fetchOgImage(item.link);
     }
   }
 

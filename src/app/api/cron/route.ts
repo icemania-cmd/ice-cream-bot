@@ -5,7 +5,7 @@ import { postTweet } from "@/lib/x-client";
 import { isAlreadyPosted, markAsPosted } from "@/lib/store";
 
 // 1回のCron実行で投稿する最大件数（レート制限対策）
-const MAX_POSTS_PER_RUN = 3;
+const MAX_POSTS_PER_RUN = 10;
 
 // 投稿間隔（ミリ秒）— X APIのレート制限を回避
 const POST_INTERVAL_MS = 5000;

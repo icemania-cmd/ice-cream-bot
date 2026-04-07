@@ -40,8 +40,11 @@ export async function GET(request: NextRequest) {
 
     if (newArticles.length === 0) {
       return NextResponse.json({
-        message: "新しい記事はありません",
+        message: articles.length === 0
+          ? "RSS取得結果が0件です（フィード取得エラーの可能性）"
+          : "新しい記事はありません",
         checked: articles.length,
+        newArticles: 0,
       });
     }
 

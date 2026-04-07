@@ -4,15 +4,9 @@ import { generatePost } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
 import { isAlreadyPosted, markAsPosted } from "@/lib/store";
 
-// 1回のCron実行で投稿する最大件数（レート制限対策）
-const MAX_POSTS_PER_RUN = 10;
-
-// 投稿間隔（ミリ秒）— X APIのレート制限を回避
-const POST_INTERVAL_MS = 5000;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+// 1回のCron実行で投稿する最大件数
+// Xアルゴリズム対策: 9分おきにcronを実行し、1件ずつ投稿する
+const MAX_POSTS_PER_RUN = 1;
 
 export async function GET(request: NextRequest) {
   // Vercel Cronからの呼び出しを認証
@@ -91,10 +85,6 @@ export async function GET(request: NextRequest) {
           console.error(`❌ 投稿失敗: ${article.title} - ${result.error}`);
         }
 
-        // 次の投稿まで待機
-        if (toPost.indexOf(article) < toPost.length - 1) {
-          await sleep(POST_INTERVAL_MS);
-        }
       } catch (error) {
         console.error(`エラー: ${article.title}`, error);
         results.push({

@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchIceCreamNews } from "@/lib/rss";
-import { generatePost } from "@/lib/comment";
+import { generatePost, extractReleaseDate } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
-import { isAlreadyPosted, markAsPosted } from "@/lib/store";
+import { isAlreadyPosted, markAsPosted, saveReminder } from "@/lib/store";
 
 // 1回のCron実行で投稿する最大件数
 // Xアルゴリズム対策: 9分おきにcronを実行し、1件ずつ投稿する
@@ -70,6 +70,29 @@ export async function GET(request: NextRequest) {
 
         if (result.success) {
           await markAsPosted(article.guid);
+
+          // 発売日を抽出してリマインド予約を保存
+          try {
+            const releaseDate = await extractReleaseDate(article);
+            if (releaseDate) {
+              const today = new Date().toISOString().split("T")[0];
+              // 未来の発売日のみリマインド予約
+              if (releaseDate > today) {
+                await saveReminder({
+                  title: article.title,
+                  description: article.description,
+                  link: article.link,
+                  imageUrl: article.imageUrl,
+                  guid: article.guid,
+                  releaseDate,
+                });
+                console.log(`📅 リマインド予約: ${releaseDate} - ${article.title}`);
+              }
+            }
+          } catch (reminderError) {
+            console.error("リマインド予約エラー:", reminderError);
+          }
+
           results.push({
             title: article.title,
             tweetId: result.tweetId,

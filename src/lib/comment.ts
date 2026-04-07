@@ -56,3 +56,98 @@ export async function generatePost(pr: PressRelease): Promise<string> {
     message.content[0].type === "text" ? message.content[0].text : "";
   return text.trim();
 }
+
+/**
+ * プレスリリースから発売日を抽出する（YYYY-MM-DD形式）
+ * 発売日が特定できない場合は null を返す
+ */
+export async function extractReleaseDate(
+  pr: PressRelease
+): Promise<string | null> {
+  try {
+    const message = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 50,
+      messages: [
+        {
+          role: "user",
+          content: `以下のプレスリリースから商品の「発売日」を抽出してください。
+
+【ルール】
+- YYYY-MM-DD 形式で出力（例: 2026-04-13）
+- 発売日が明確に記載されている場合のみ出力
+- 「発売中」「好評発売中」など既に発売済みの場合は「NONE」と出力
+- 発売日が不明な場合は「NONE」と出力
+- 日付のみを出力。余計な文字は不要
+
+タイトル: ${pr.title}
+内容: ${pr.description}`,
+        },
+      ],
+    });
+
+    const result =
+      message.content[0].type === "text" ? message.content[0].text.trim() : "";
+
+    // YYYY-MM-DD形式の日付かチェック
+    if (/^\d{4}-\d{2}-\d{2}$/.test(result)) {
+      return result;
+    }
+    return null;
+  } catch (error) {
+    console.error("発売日抽出エラー:", error);
+    return null;
+  }
+}
+
+/**
+ * リマインド投稿文を生成する（発売日前日の20時に投稿）
+ */
+export async function generateReminderPost(
+  pr: PressRelease
+): Promise<string> {
+  const message = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 300,
+    messages: [
+      {
+        role: "user",
+        content: `あなたはアイスクリーム評論家「アイスマン福留」としてXに投稿します。
+以下のプレスリリースの商品が「明日発売」です。発売日前日のリマインド投稿を作成してください。
+
+【投稿フォーマット】
+【リマインド】で始まり、商品の魅力を伝えつつ「明日発売ですよ！」というお知らせ感のある投稿
+
+【ルール】
+- 冒頭は必ず「【リマインド】」から始める
+- メーカー名・商品名・発売日・販売エリアを含める
+- 商品の特徴を簡潔に紹介する
+- 「お見逃しなく」「お楽しみに」「お早めに」など購買意欲を刺激する一言を入れる
+- 数量限定の場合は強調する
+- プレスリリースに記載がない情報は絶対に捏造しない
+- URLは絶対に含めない
+- ハッシュタグは不要
+- 絵文字は使わない
+- 全体で280文字（半角換算）以内に収める
+- 自然で読みやすい日本語、カジュアルだけど情報量がある文体
+
+【参考例】
+【リマインド】ピノの新作！ストロベリーチーズケーキ味！森永乳業「ピノ ストロベリーチーズケーキ」 5月21日(火)より全国のコンビニエンスストアにて数量限定で新発売！
+
+【リマインド】ピノの新作は...ティラミス!!森永乳業『ピノ 濃厚ティラミス』11月25日(火)から全国のコンビニエンスストアで数量限定発売!! 北海道産マスカルポーネチーズを使用したアイスクリームを、コーヒーチョコでコーティング！隠し味にココアが香るフレーバーを加えてティラミスの味わいを完全再現！価格:200円（税別）
+
+【リマインド】全国で発売中！前回買い逃してしまった人は、今回こそお見逃しなく～!!「カラースプレー」「チョコソース」「ホイップクリーム風アイス」の3種をぎゅ～っと1本に詰め込んだ、鬼トッピング仕様の夢のようなアイスバー。  赤城乳業『トッピンぎゅ～！』  食べたい人は数量限定なのでお早めに！
+
+【プレスリリース】
+タイトル: ${pr.title}
+内容: ${pr.description}
+
+投稿文のみを出力してください。余計な説明や前置きは不要です。`,
+      },
+    ],
+  });
+
+  const text =
+    message.content[0].type === "text" ? message.content[0].text : "";
+  return text.trim();
+}

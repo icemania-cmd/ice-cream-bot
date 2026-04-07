@@ -9,22 +9,41 @@ export interface PressRelease {
 }
 
 // PR TIMESのメインRSSフィード（全プレスリリース）
-// ※ searchrss エンドポイントは廃止済み。全件取得→キーワードフィルタで対応
+// ※ searchrss エンドポイントは廃止済み。全件取得→フィルタで対応
 const RSS_URLS = [
   "https://prtimes.jp/index.rdf",
 ];
 
-// キーワードフィルタ: これらのいずれかを含む記事のみ対象
+// 対象企業・ブランド: 大手アイスメーカー＋コンビニ
+const COMPANIES = [
+  "赤城乳業",
+  "ハーゲンダッツ",
+  "井村屋",
+  "森永乳業",
+  "森永製菓",
+  "協同乳業",
+  "ジェリービーンズ",
+  "明治",
+  "オハヨー乳業",
+  "セブン-イレブン",
+  "セブンイレブン",
+  "ローソン",
+  "ファミリーマート",
+  "ファミマ",
+  "ロッテ",
+  "グリコ",
+  "江崎グリコ",
+  "丸永製菓",
+  "フタバ食品",
+  "センタン",
+  "竹下製菓",
+  "シャトレーゼ",
+];
+
+// キーワードフィルタ: 「アイスクリーム」関連に限定
 const KEYWORDS = [
   "アイスクリーム",
   "アイス",
-  "ジェラート",
-  "ソフトクリーム",
-  "かき氷",
-  "シャーベット",
-  "フローズン",
-  "氷菓",
-  "パフェ",
 ];
 
 export async function fetchIceCreamNews(): Promise<PressRelease[]> {
@@ -51,9 +70,12 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
         if (seenGuids.has(guid)) continue;
 
         const text = `${item.title || ""} ${item.contentSnippet || ""} ${item.content || ""}`;
-        const isRelevant = KEYWORDS.some((kw) =>
+        const hasKeyword = KEYWORDS.some((kw) =>
           text.toLowerCase().includes(kw.toLowerCase())
         );
+        const hasCompany = COMPANIES.some((co) => text.includes(co));
+        // キーワード＋企業名の両方を含む記事のみ対象
+        const isRelevant = hasKeyword && hasCompany;
 
         if (isRelevant) {
           seenGuids.add(guid);
@@ -93,9 +115,11 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
           if (seenGuids.has(guid)) continue;
 
           const itemText = `${item.title || ""} ${item.contentSnippet || ""} ${item.content || ""}`;
-          const isRelevant = KEYWORDS.some((kw) =>
+          const fbHasKeyword = KEYWORDS.some((kw) =>
             itemText.toLowerCase().includes(kw.toLowerCase())
           );
+          const fbHasCompany = COMPANIES.some((co) => itemText.includes(co));
+          const isRelevant = fbHasKeyword && fbHasCompany;
 
           if (isRelevant) {
             seenGuids.add(guid);

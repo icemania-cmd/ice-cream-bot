@@ -5,7 +5,7 @@ import { postTweet, uploadImageToX } from "@/lib/x-client";
 import { isAlreadyPosted, markAsPosted, saveReminder } from "@/lib/store";
 
 // 1回のCron実行で投稿する最大件数
-// Xアルゴリズム対策: 9分おきにcronを実行し、1件ずつ投稿する
+// Xアルゴリズム対策: 33分おきにcronを実行し、1件ずつ投稿する
 const MAX_POSTS_PER_RUN = 1;
 
 export async function GET(request: NextRequest) {
@@ -48,9 +48,31 @@ export async function GET(request: NextRequest) {
 
     for (const article of toPost) {
       try {
-        // Claude APIで投稿文を生成
+        // ① 発売日チェック: 投稿日より前の発売日はスキップ
+        const releaseDate = await extractReleaseDate(article);
+        if (releaseDate) {
+          // 日本時間(JST=UTC+9)で今日の日付を取得
+          const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+          const today = jstNow.toISOString().split("T")[0];
+          if (releaseDate < today) {
+            console.log(`⏭️ 発売日スキップ: ${releaseDate} < ${today} - ${article.title}`);
+            await markAsPosted(article.guid);
+            results.push({ title: article.title, status: "skipped_past_release" });
+            continue;
+          }
+        }
+
+        // ② Claude APIで投稿文を生成
         const postText = await generatePost(article);
         console.log(`生成された投稿文:\n${postText}\n`);
+
+        // ③ 新商品以外（SKIP）はXに投稿せず記録だけして終了
+        if (postText.trim() === "SKIP") {
+          console.log(`⏭️ 新商品以外のためスキップ: ${article.title}`);
+          await markAsPosted(article.guid);
+          results.push({ title: article.title, status: "skipped_not_new_product" });
+          continue;
+        }
 
         // 画像がある場合はアップロード
         let mediaIds: string[] | undefined;
@@ -71,13 +93,12 @@ export async function GET(request: NextRequest) {
         if (result.success) {
           await markAsPosted(article.guid);
 
-          // 発売日を抽出してリマインド予約を保存
+          // 発売日が未来の場合はリマインド予約を保存（①で取得済みのreleaseDateを再利用）
           try {
-            const releaseDate = await extractReleaseDate(article);
             if (releaseDate) {
-              const today = new Date().toISOString().split("T")[0];
-              // 未来の発売日のみリマインド予約
-              if (releaseDate > today) {
+              const jstNow2 = new Date(Date.now() + 9 * 60 * 60 * 1000);
+              const today2 = jstNow2.toISOString().split("T")[0];
+              if (releaseDate > today2) {
                 await saveReminder({
                   title: article.title,
                   description: article.description,

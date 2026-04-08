@@ -84,9 +84,28 @@ export async function GET(request: NextRequest) {
 
     const results = [];
 
+    // 今日の日付（JST）を取得
+    const nowJst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const todayStr = nowJst.toISOString().split("T")[0];
+
     for (const product of products) {
       try {
         console.log(`投稿処理開始: ${product.store} - ${product.name}`);
+
+        // 発売日チェック（二重防御：スキャン時にもチェック済みだが念のため）
+        if (!product.releaseDate || product.releaseDate === "不明") {
+          console.log(`発売日不明スキップ: ${product.name}`);
+          await markCvsProductPosted(product.productId);
+          results.push({ name: product.name, store: product.store, status: "skipped", reason: "no_release_date" });
+          continue;
+        }
+        const releaseDateMatch = product.releaseDate.match(/\d{4}-\d{2}-\d{2}/);
+        if (releaseDateMatch && releaseDateMatch[0] < todayStr) {
+          console.log(`既発売スキップ: ${product.name} (${releaseDateMatch[0]})`);
+          await markCvsProductPosted(product.productId);
+          results.push({ name: product.name, store: product.store, status: "skipped", reason: "already_released" });
+          continue;
+        }
 
         // 投稿文を生成
         const postText = await generateCvsPost(product);

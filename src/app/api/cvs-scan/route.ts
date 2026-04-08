@@ -25,9 +25,14 @@ export async function GET(request: NextRequest) {
     const products = await scanAllCvs();
     console.log(`スキャン結果: 全${products.length}件の商品を検出`);
 
+    // 今日の日付（JST）を取得
+    const nowJst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const todayStr = nowJst.toISOString().split("T")[0]; // YYYY-MM-DD
+
     let newCount = 0;
     let duplicateCount = 0;
     let prTimesSkipCount = 0;
+    let dateSkipCount = 0;
     const errors: string[] = [];
 
     for (const product of products) {
@@ -35,6 +40,26 @@ export async function GET(request: NextRequest) {
         // 商品名が空・不正な場合はスキップ
         if (!product.name || product.name.length < 2) {
           console.log(`商品名不正スキップ: ${product.name}`);
+          continue;
+        }
+
+        // 発売日チェック：不明・空・パース不能はスキップ（正確な情報のみ発信）
+        if (!product.releaseDate || product.releaseDate === "不明" || product.releaseDate.trim() === "") {
+          dateSkipCount++;
+          console.log(`発売日不明スキップ: ${product.name}`);
+          continue;
+        }
+
+        // 発売日が今日より前（既発売）はスキップ
+        const releaseDateMatch = product.releaseDate.match(/\d{4}-\d{2}-\d{2}/);
+        if (!releaseDateMatch) {
+          dateSkipCount++;
+          console.log(`発売日フォーマット不正スキップ: ${product.name} (${product.releaseDate})`);
+          continue;
+        }
+        if (releaseDateMatch[0] < todayStr) {
+          dateSkipCount++;
+          console.log(`既発売スキップ: ${product.name} (発売日: ${releaseDateMatch[0]})`);
           continue;
         }
 
@@ -83,10 +108,11 @@ export async function GET(request: NextRequest) {
       new: newCount,
       duplicate: duplicateCount,
       prTimesSkip: prTimesSkipCount,
+      dateSkip: dateSkipCount,
       errors: errors.length > 0 ? errors : undefined,
     };
 
-    console.log(`📊 スキャン結果: 新規${newCount}件 / 既知${duplicateCount}件 / PR TIMES重複${prTimesSkipCount}件`);
+    console.log(`📊 スキャン結果: 新規${newCount}件 / 既知${duplicateCount}件 / PR TIMES重複${prTimesSkipCount}件 / 日付スキップ${dateSkipCount}件`);
 
     return NextResponse.json(summary);
   } catch (error) {

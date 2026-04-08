@@ -70,6 +70,31 @@ async function fetchHtml(url: string): Promise<string | null> {
 }
 
 /**
+ * HTMLから不要な部分を除去して軽量化する
+ * <script>, <style>, <head>, ナビゲーション等を除去
+ */
+function cleanHtml(html: string): string {
+  let cleaned = html;
+  // <head>セクション全体を除去
+  cleaned = cleaned.replace(/<head[\s\S]*?<\/head>/gi, "");
+  // <script>タグを除去
+  cleaned = cleaned.replace(/<script[\s\S]*?<\/script>/gi, "");
+  // <style>タグを除去
+  cleaned = cleaned.replace(/<style[\s\S]*?<\/style>/gi, "");
+  // <noscript>タグを除去
+  cleaned = cleaned.replace(/<noscript[\s\S]*?<\/noscript>/gi, "");
+  // <nav>タグを除去
+  cleaned = cleaned.replace(/<nav[\s\S]*?<\/nav>/gi, "");
+  // <footer>タグを除去
+  cleaned = cleaned.replace(/<footer[\s\S]*?<\/footer>/gi, "");
+  // HTMLコメントを除去
+  cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, "");
+  // 連続する空白・改行を圧縮
+  cleaned = cleaned.replace(/\s{2,}/g, " ");
+  return cleaned.trim();
+}
+
+/**
  * Claude APIでHTMLからアイスクリーム商品情報を抽出する
  */
 async function extractProductsFromHtml(
@@ -78,9 +103,11 @@ async function extractProductsFromHtml(
   baseUrl: string
 ): Promise<CvsProduct[]> {
   try {
-    // HTMLが大きすぎる場合は切り詰め（Claude APIのトークン制限対策）
+    // 不要なHTML要素を除去してから切り詰め
+    const cleanedHtml = cleanHtml(html);
     const truncatedHtml =
-      html.length > 30000 ? html.substring(0, 30000) : html;
+      cleanedHtml.length > 50000 ? cleanedHtml.substring(0, 50000) : cleanedHtml;
+    console.log(`${store}: HTML軽量化 ${html.length} → ${cleanedHtml.length} → 送信${truncatedHtml.length}文字`);
 
     const message = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",

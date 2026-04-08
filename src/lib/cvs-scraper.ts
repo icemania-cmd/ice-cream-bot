@@ -111,7 +111,7 @@ async function extractProductsFromHtml(
 
     const message = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 2000,
+      max_tokens: 4000,
       messages: [
         {
           role: "user",
@@ -158,11 +158,19 @@ ${truncatedHtml}`,
     }>;
 
     try {
-      // マークダウンのコードブロック記号を除去
-      const cleanJson = text
-        .replace(/^```json?\s*/i, "")
-        .replace(/\s*```$/i, "")
+      // マークダウンのコードブロック記号を除去（改行付きパターンにも対応）
+      let cleanJson = text
+        .replace(/```json?\s*/gi, "")
+        .replace(/```\s*/gi, "")
         .trim();
+
+      // JSON配列の開始・終了を見つけてそこだけ抽出（余計なテキスト混入対策）
+      const startIdx = cleanJson.indexOf("[");
+      const endIdx = cleanJson.lastIndexOf("]");
+      if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+        cleanJson = cleanJson.substring(startIdx, endIdx + 1);
+      }
+
       products = JSON.parse(cleanJson);
     } catch {
       console.error(`JSON解析エラー（${store}）:`, text.substring(0, 200));

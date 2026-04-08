@@ -100,3 +100,116 @@ export async function isReminderPosted(guid: string): Promise<boolean> {
 export async function markReminderAsPosted(guid: string): Promise<void> {
   await redis.set(`reminder_posted:${guid}`, "1", { ex: EXPIRY_SECONDS });
 }
+
+// ===== CVSコンビニ商品スクレイピング機能 =====
+
+const CVS_PRODUCT_PREFIX = "cvs_product:";
+const CVS_QUEUE_PREFIX = "cvs_queue:";
+const CVS_POSTED_PREFIX = "cvs_posted:";
+
+export interface CvsProductData {
+  store: string;
+  name: string;
+  maker: string;
+  price: string;
+  releaseDate: string;
+  region: string;
+  description: string;
+  imageUrl: string;
+  productId: string;
+  detectedAt: string; // ISO 8601
+}
+
+/**
+ * CVS商品が既知かどうかを確認する（重複検出）
+ */
+export async function isCvsProductKnown(productId: string): Promise<boolean> {
+  const exists = await redis.exists(`${CVS_PRODUCT_PREFIX}${productId}`);
+  return exists === 1;
+}
+
+/**
+ * CVS商品名がPR TIMESで既に投稿済みかチェックする
+ * 商品名の部分一致で重複を防止
+ */
+export async function isDuplicateWithPrTimes(productName: string): Promise<boolean> {
+  // PR TIMES投稿済みキーをスキャン
+  const postedKeys = await redis.keys(`${KEY_PREFIX}*`);
+
+  for (const key of postedKeys) {
+    const value = await redis.get<string>(key);
+    if (value && typeof value === "string") {
+      // キーからguidを取得し、タイトルに商品名が含まれるかチェック
+      // posted: キーの値には投稿タイトルを保存する形式に変更済みの場合
+      if (value.includes(productName)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * CVS商品を保存し、投稿キューに追加する
+ */
+export async function saveCvsProduct(product: CvsProductData): Promise<void> {
+  const productKey = `${CVS_PRODUCT_PREFIX}${product.productId}`;
+  const queueKey = `${CVS_QUEUE_PREFIX}${product.productId}`;
+
+  // 商品情報を保存（30日間保持）
+  await redis.set(productKey, JSON.stringify(product), { ex: EXPIRY_SECONDS });
+
+  // 投稿キューに追加（投稿されるまで保持、最大7日）
+  await redis.set(queueKey, JSON.stringify(product), {
+    ex: 60 * 60 * 24 * 7,
+  });
+
+  console.log(`CVS商品保存: ${product.store} - ${product.name}`);
+}
+
+/**
+ * 投稿キューからCVS商品を取得する（未投稿のもの）
+ * 最大limit件返す
+ */
+export async function getCvsProductsToPost(
+  limit: number = 1
+): Promise<CvsProductData[]> {
+  const queueKeys = await redis.keys(`${CVS_QUEUE_PREFIX}*`);
+  const products: CvsProductData[] = [];
+
+  for (const key of queueKeys) {
+    if (products.length >= limit) break;
+
+    const data = await redis.get<string>(key);
+    if (data) {
+      try {
+        const parsed = typeof data === "string" ? JSON.parse(data) : data;
+        const product = parsed as CvsProductData;
+
+        // 既に投稿済みでないかチェック
+        const posted = await redis.exists(
+          `${CVS_POSTED_PREFIX}${product.productId}`
+        );
+        if (posted === 0) {
+          products.push(product);
+        }
+      } catch {
+        console.error(`CVSキューデータ解析エラー: ${key}`);
+      }
+    }
+  }
+
+  return products;
+}
+
+/**
+ * CVS商品を投稿済みとしてマークし、キューから削除する
+ */
+export async function markCvsProductPosted(productId: string): Promise<void> {
+  // 投稿済みフラグ（30日保持）
+  await redis.set(`${CVS_POSTED_PREFIX}${productId}`, "1", {
+    ex: EXPIRY_SECONDS,
+  });
+  // キューから削除
+  await redis.del(`${CVS_QUEUE_PREFIX}${productId}`);
+}

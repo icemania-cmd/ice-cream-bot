@@ -1,0 +1,207 @@
+import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY!,
+});
+
+export interface CvsProduct {
+  store: string; // ファミリーマート / セブン-イレブン / ローソン / ミニストップ
+  name: string; // 商品名
+  maker: string; // メーカー名
+  price: string; // 価格（税込表記含む）
+  releaseDate: string; // 発売日（YYYY-MM-DD or 空）
+  region: string; // 販売エリア
+  description: string; // 商品説明
+  imageUrl: string; // 商品画像URL
+  productId: string; // 重複チェック用の一意キー
+}
+
+const CVS_SITES = [
+  {
+    store: "ファミリーマート",
+    url: "https://www.family.co.jp/goods/ice.html",
+    baseUrl: "https://www.family.co.jp",
+  },
+  {
+    store: "セブン-イレブン",
+    url: "https://www.sej.co.jp/products/a/cat/060020010000000/",
+    baseUrl: "https://www.sej.co.jp",
+  },
+  {
+    store: "ローソン",
+    url: "https://www.lawson.co.jp/recommend/original/icecream/",
+    baseUrl: "https://www.lawson.co.jp",
+  },
+  {
+    store: "ミニストップ",
+    url: "https://www.ministop.co.jp/syohin/sweets/",
+    baseUrl: "https://www.ministop.co.jp",
+  },
+];
+
+/**
+ * HTMLをfetchして取得する
+ */
+async function fetchHtml(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+      },
+    });
+
+    if (!res.ok) {
+      console.error(`HTML取得失敗: ${url} → ${res.status}`);
+      return null;
+    }
+
+    return await res.text();
+  } catch (error) {
+    console.error(
+      `HTML取得エラー: ${url} →`,
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+}
+
+/**
+ * Claude APIでHTMLからアイスクリーム商品情報を抽出する
+ */
+async function extractProductsFromHtml(
+  html: string,
+  store: string,
+  baseUrl: string
+): Promise<CvsProduct[]> {
+  try {
+    // HTMLが大きすぎる場合は切り詰め（Claude APIのトークン制限対策）
+    const truncatedHtml =
+      html.length > 30000 ? html.substring(0, 30000) : html;
+
+    const message = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 2000,
+      messages: [
+        {
+          role: "user",
+          content: `以下のHTMLは「${store}」の商品ページです。
+このHTMLから **アイスクリーム・アイス・ジェラート・ソフトクリーム** の商品情報のみを抽出してください。
+${store === "ミニストップ" ? "ハロハロ・パフェなどのコールドスイーツも含めてOKです。" : ""}
+
+【重要】アイスクリーム類以外の商品（スイーツ、飲料、おにぎり、弁当、パンなど）は絶対に含めないでください。
+
+以下のJSON配列形式で出力してください。商品がない場合は空配列 [] を出力してください。
+
+[
+  {
+    "name": "商品名",
+    "maker": "メーカー名（不明なら空文字）",
+    "price": "価格（税込表記があれば含む。不明なら空文字）",
+    "releaseDate": "発売日（YYYY-MM-DD形式。不明なら空文字）",
+    "region": "販売エリア（不明なら「全国」）",
+    "description": "商品の特徴を1〜2文で（HTMLから読み取れる範囲で。不明なら空文字）",
+    "imageUrl": "商品画像のURL（相対パスの場合は相対パスのまま出力）"
+  }
+]
+
+JSON配列のみを出力してください。余計な説明や前置き、マークダウンのコードブロック記号は不要です。
+
+HTML:
+${truncatedHtml}`,
+        },
+      ],
+    });
+
+    const text =
+      message.content[0].type === "text" ? message.content[0].text.trim() : "";
+
+    // JSONパース
+    let products: Array<{
+      name: string;
+      maker: string;
+      price: string;
+      releaseDate: string;
+      region: string;
+      description: string;
+      imageUrl: string;
+    }>;
+
+    try {
+      // マークダウンのコードブロック記号を除去
+      const cleanJson = text
+        .replace(/^```json?\s*/i, "")
+        .replace(/\s*```$/i, "")
+        .trim();
+      products = JSON.parse(cleanJson);
+    } catch {
+      console.error(`JSON解析エラー（${store}）:`, text.substring(0, 200));
+      return [];
+    }
+
+    if (!Array.isArray(products)) return [];
+
+    // CvsProduct形式に変換
+    return products.map((p) => {
+      // 相対URLを絶対URLに変換
+      let imageUrl = p.imageUrl || "";
+      if (imageUrl && !imageUrl.startsWith("http")) {
+        imageUrl = imageUrl.startsWith("/")
+          ? `${baseUrl}${imageUrl}`
+          : `${baseUrl}/${imageUrl}`;
+      }
+
+      return {
+        store,
+        name: p.name || "",
+        maker: p.maker || "",
+        price: p.price || "",
+        releaseDate: p.releaseDate || "",
+        region: p.region || "全国",
+        description: p.description || "",
+        imageUrl,
+        // 重複チェック用キー: 店名+商品名をハッシュ化
+        productId: `cvs:${store}:${p.name}`.replace(/\s/g, ""),
+      };
+    });
+  } catch (error) {
+    console.error(
+      `商品抽出エラー（${store}）:`,
+      error instanceof Error ? error.message : error
+    );
+    return [];
+  }
+}
+
+/**
+ * 全コンビニサイトをスキャンしてアイスクリーム商品を取得する
+ */
+export async function scanAllCvs(): Promise<CvsProduct[]> {
+  const allProducts: CvsProduct[] = [];
+
+  for (const site of CVS_SITES) {
+    console.log(`🏪 ${site.store} スキャン開始: ${site.url}`);
+
+    const html = await fetchHtml(site.url);
+    if (!html) {
+      console.error(`${site.store}: HTML取得失敗、スキップ`);
+      continue;
+    }
+
+    console.log(`${site.store}: HTML取得成功（${html.length} bytes）`);
+
+    const products = await extractProductsFromHtml(
+      html,
+      site.store,
+      site.baseUrl
+    );
+    console.log(`${site.store}: ${products.length}件のアイス商品を検出`);
+
+    allProducts.push(...products);
+  }
+
+  return allProducts;
+}

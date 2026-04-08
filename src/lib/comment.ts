@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { PressRelease } from "./rss";
+import type { CvsProductData } from "./store";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
@@ -155,4 +156,71 @@ export async function generateReminderPost(
   const text =
     message.content[0].type === "text" ? message.content[0].text : "";
   return text.trim();
+}
+
+/**
+ * CVSコンビニ商品の投稿文を生成する
+ * アイスマン福留の自然なトーンで、BOTっぽさを完全排除
+ */
+export async function generateCvsPost(
+  product: CvsProductData
+): Promise<string> {
+  const message = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 300,
+    messages: [
+      {
+        role: "user",
+        content: `あなたはアイスクリーム評論家「アイスマン福留」（@icemania）です。コンビニの新商品情報をXで投稿する文章を作成してください。
+
+【最重要ルール】
+- 投稿文のみを出力すること。余計な説明・前置き・コードブロックは不要
+- エラーメッセージや技術的な文言は絶対に含めない
+- 商品情報が不完全・不自然な場合は「SKIP」とだけ出力する
+- アイスクリーム・アイス・ジェラート・ソフトクリーム${product.store === "ミニストップ" ? "・ハロハロ・パフェなどのコールドスイーツ" : ""}以外の商品の場合は「SKIP」とだけ出力する
+
+【文体・トーンの指示】
+- 冒頭は必ず「【コンビニ】」から始める
+- ですます調をベースにしつつ、体言止めやカジュアルなひと言を自然に混ぜる
+- 毎回必ず以下のいずれか1つのトーンをランダムに選んで書いてください：
+  - ワクワク系：「これは楽しみ！」「たまりませんね」「好きなやつです」
+  - 発見系：「見つけました」「コンビニパトロールの成果です」「棚にありました」
+  - 速報系：新商品情報を淡々と伝えつつ、最後に一言期待感を添える
+  - 感想系：「気になる〜」「どんな味なんだろう」「これは試したい」
+  - 行動系：「コンビニ寄らなきゃ」「見かけたら即買い」「チェック推奨」
+- 毎回同じ構成にしない。短文のときも、少し詳しく書くときもある
+
+【内容のルール】
+- コンビニ名（${product.store}）は必ず記載
+- 商品名は正確に記載
+- 価格・メーカー名があれば含める
+- 販売エリアが「全国」以外なら記載する
+- プレスリリースにない情報を捏造しない
+- URLは絶対に含めない
+- ハッシュタグ不要
+- 絵文字は使わない
+- 全体で280文字（半角換算）以内
+
+【参考例（雰囲気の参考として）】
+【コンビニ】ファミリーマートから「たべる牧場ミルク バニラ＆いちご」が登場。190円（税込）。バニラといちごの2層仕立て。これは気になる〜。
+
+【コンビニ】セブン-イレブンで「まるでマンゴーを冷凍したような食感のアイスバー」を発見。108円。全国販売です。見かけたら即買い推奨。
+
+【商品情報】
+コンビニ: ${product.store}
+商品名: ${product.name}
+メーカー: ${product.maker || "不明"}
+価格: ${product.price || "不明"}
+発売日: ${product.releaseDate || "不明"}
+販売エリア: ${product.region || "全国"}
+商品説明: ${product.description || "なし"}
+
+投稿文のみを出力してください。`,
+      },
+    ],
+  });
+
+  const postText =
+    message.content[0].type === "text" ? message.content[0].text : "";
+  return postText.trim();
 }

@@ -26,11 +26,12 @@ export async function GET(request: NextRequest) {
     const now = new Date();
     const jstOffset = 9 * 60 * 60 * 1000; // UTC+9
     const jstNow = new Date(now.getTime() + jstOffset);
+    const jstHour = jstNow.getUTCHours(); // JSTでの現在時（UTC+9後のgetUTCHours）
     const tomorrow = new Date(jstNow);
     tomorrow.setDate(tomorrow.getDate() + 1);
     const tomorrowStr = tomorrow.toISOString().split("T")[0]; // YYYY-MM-DD
 
-    console.log(`明日の日付（JST）: ${tomorrowStr}`);
+    console.log(`明日の日付（JST）: ${tomorrowStr} / 現在時刻（JST）: ${jstHour}時`);
 
     // 明日発売の商品を取得
     const reminders = await getRemindersForDate(tomorrowStr);
@@ -52,6 +53,12 @@ export async function GET(request: NextRequest) {
         const alreadyPosted = await isReminderPosted(reminder.guid);
         if (alreadyPosted) {
           console.log(`リマインド投稿済みスキップ: ${reminder.title}`);
+          continue;
+        }
+
+        // chosenHourが設定されている場合、現在のJST時刻と一致しないスロットはスキップ
+        if (reminder.chosenHour !== undefined && reminder.chosenHour !== jstHour) {
+          console.log(`⏭️ 投稿時間不一致スキップ: 指定=${reminder.chosenHour}時 現在=${jstHour}時 - ${reminder.title}`);
           continue;
         }
 

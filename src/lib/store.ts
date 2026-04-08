@@ -42,6 +42,7 @@ export interface ReminderData {
   imageUrl?: string;
   guid: string;
   releaseDate: string; // YYYY-MM-DD
+  chosenHour?: number; // リマインド投稿時間（JST）: 7 / 12 / 20
 }
 
 /**

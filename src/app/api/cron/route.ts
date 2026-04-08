@@ -99,6 +99,9 @@ export async function GET(request: NextRequest) {
               const jstNow2 = new Date(Date.now() + 9 * 60 * 60 * 1000);
               const today2 = jstNow2.toISOString().split("T")[0];
               if (releaseDate > today2) {
+                // 7時・12時・20時からランダムに投稿時間を選択（bot感を減らすため）
+                const REMINDER_HOURS = [7, 12, 20];
+                const chosenHour = REMINDER_HOURS[Math.floor(Math.random() * REMINDER_HOURS.length)];
                 await saveReminder({
                   title: article.title,
                   description: article.description,
@@ -106,8 +109,9 @@ export async function GET(request: NextRequest) {
                   imageUrl: article.imageUrl,
                   guid: article.guid,
                   releaseDate,
+                  chosenHour,
                 });
-                console.log(`📅 リマインド予約: ${releaseDate} - ${article.title}`);
+                console.log(`📅 リマインド予約: ${releaseDate} ${chosenHour}時 - ${article.title}`);
               }
             }
           } catch (reminderError) {

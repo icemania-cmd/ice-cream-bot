@@ -75,11 +75,11 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
-        // ② Claude APIで投稿文を生成
+        // ③ Claude APIで投稿文を生成
         const postText = await generatePost(article);
         console.log(`生成された投稿文:\n${postText}\n`);
 
-        // ③ 新商品以外（SKIP）はXに投稿せず記録だけして終了
+        // ④ 新商品以外（SKIP）はXに投稿せず記録だけして終了
         if (postText.trim() === "SKIP") {
           console.log(`⏭️ 新商品以外のためスキップ: ${article.title}`);
           await markAsPosted(article.guid);
@@ -106,20 +106,31 @@ export async function GET(request: NextRequest) {
         if (result.success) {
           await markAsPosted(article.guid, article.title);
 
-          // リマインド予約を保存（このポイントでは releaseDate > today が保証済み）
+          // リマインド予約を保存（発売が2日以上先の場合のみ）
+          // 翌日発売品は本投稿が「前日告知」を兼ねるため不要。
+          // また翌日発売にリマインドを保存すると chosenHour=7 が当日7:00 UTC 実行済みで
+          // 永久にスキップされるバグ、または12/20時に同日二重投稿になるバグを防ぐ。
           try {
-            const REMINDER_HOURS = [7, 12, 20];
-            const chosenHour = REMINDER_HOURS[Math.floor(Math.random() * REMINDER_HOURS.length)];
-            await saveReminder({
-              title: article.title,
-              description: article.description,
-              link: article.link,
-              imageUrl: article.imageUrl,
-              guid: article.guid,
-              releaseDate,
-              chosenHour,
-            });
-            console.log(`📅 リマインド予約: ${releaseDate} ${chosenHour}時 - ${article.title}`);
+            const tomorrowJst = new Date(jstNow);
+            tomorrowJst.setDate(tomorrowJst.getDate() + 1);
+            const tomorrowStr = tomorrowJst.toISOString().split("T")[0];
+
+            if (releaseDate > tomorrowStr) {
+              const REMINDER_HOURS = [7, 12, 20];
+              const chosenHour = REMINDER_HOURS[Math.floor(Math.random() * REMINDER_HOURS.length)];
+              await saveReminder({
+                title: article.title,
+                description: article.description,
+                link: article.link,
+                imageUrl: article.imageUrl,
+                guid: article.guid,
+                releaseDate,
+                chosenHour,
+              });
+              console.log(`📅 リマインド予約: ${releaseDate} ${chosenHour}時 - ${article.title}`);
+            } else {
+              console.log(`📅 リマインド不要（翌日発売のため本投稿が前日告知を兼ねる）: ${article.title}`);
+            }
           } catch (reminderError) {
             console.error("リマインド予約エラー:", reminderError);
           }

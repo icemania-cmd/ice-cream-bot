@@ -57,7 +57,7 @@ export async function GET(request: NextRequest) {
           console.log(`発売日フォーマット不正スキップ: ${product.name} (${product.releaseDate})`);
           continue;
         }
-        if (releaseDateMatch[0] < todayStr) {
+        if (releaseDateMatch[0] <= todayStr) {
           dateSkipCount++;
           console.log(`既発売スキップ: ${product.name} (発売日: ${releaseDateMatch[0]})`);
           continue;

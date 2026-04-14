@@ -104,7 +104,7 @@ export async function GET(request: NextRequest) {
         const result = await postTweet(postText, mediaIds);
 
         if (result.success) {
-          await markAsPosted(article.guid, article.title);
+          await markAsPosted(article.guid, article.title, article.imageUrl);
 
           // リマインド予約を保存（発売が2日以上先の場合のみ）
           // 翌日発売品は本投稿が「前日告知」を兼ねるため不要。

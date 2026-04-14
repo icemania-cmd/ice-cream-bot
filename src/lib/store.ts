@@ -19,8 +19,12 @@ export async function isAlreadyPosted(guid: string): Promise<boolean> {
 /**
  * 投稿済みとしてマークする
  */
-export async function markAsPosted(guid: string, title?: string): Promise<void> {
-  await redis.set(`${KEY_PREFIX}${guid}`, title || "1", { ex: EXPIRY_SECONDS });
+export async function markAsPosted(guid: string, title?: string, imageUrl?: string): Promise<void> {
+  // title + imageUrl がある場合は JSON で保存（CVSスキャン時の画像参照に使用）
+  const value = title && imageUrl
+    ? JSON.stringify({ t: title, i: imageUrl })
+    : title || "1";
+  await redis.set(`${KEY_PREFIX}${guid}`, value, { ex: EXPIRY_SECONDS });
 }
 
 /**
@@ -133,20 +137,51 @@ export async function isCvsProductKnown(productId: string): Promise<boolean> {
  * 商品名の部分一致で重複を防止
  */
 export async function isDuplicateWithPrTimes(productName: string): Promise<boolean> {
-  // PR TIMES投稿済みキーをスキャン
   const postedKeys = await redis.keys(`${KEY_PREFIX}*`);
-
   for (const key of postedKeys) {
     const value = await redis.get<string>(key);
-    if (value && typeof value === "string") {
-      // キーからguidを取得し、タイトルに商品名が含まれるかチェック
-      // posted: キーの値には投稿タイトルを保存する形式に変更済みの場合
-      if (value.includes(productName)) {
-        return true;
-      }
+    if (!value || typeof value !== "string") continue;
+    // JSON形式（{t: title, i: imageUrl}）またはプレーン文字列を解析
+    let title = value;
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed.t) title = parsed.t;
+    } catch {
+      // プレーン文字列そのまま使用
     }
+    if (title.includes(productName)) return true;
   }
   return false;
+}
+
+/**
+ * CVS商品名に対応するPR Times記事の画像URLを返す
+ * 商品名またはその構成キーワードとタイトルを部分一致で検索
+ * 見つからない場合はnullを返す
+ */
+export async function findPrTimesImage(productName: string): Promise<string | null> {
+  const postedKeys = await redis.keys(`${KEY_PREFIX}*`);
+  // 商品名 + 区切り文字で分割した3文字以上のキーワードで検索
+  const keywords = [
+    productName,
+    ...productName.split(/[\s　・「」、。！？〜\/＆&]+/).filter(k => k.length >= 3),
+  ];
+  for (const key of postedKeys) {
+    const value = await redis.get<string>(key);
+    if (!value || typeof value !== "string") continue;
+    let title = "";
+    let imageUrl = "";
+    try {
+      const parsed = JSON.parse(value);
+      title = parsed.t || "";
+      imageUrl = parsed.i || "";
+    } catch {
+      continue; // JSON形式でなければ imageUrl は保存されていない
+    }
+    if (!imageUrl || !title) continue;
+    if (keywords.some(kw => title.includes(kw))) return imageUrl;
+  }
+  return null;
 }
 
 /**

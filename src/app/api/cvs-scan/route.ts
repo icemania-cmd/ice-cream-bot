@@ -3,6 +3,7 @@ import { scanAllCvs } from "@/lib/cvs-scraper";
 import {
   isCvsProductKnown,
   isDuplicateWithPrTimes,
+  findPrTimesImage,
   saveCvsProduct,
   type CvsProductData,
 } from "@/lib/store";
@@ -78,6 +79,12 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
+        // PRTimes投稿済み記事の画像があればCVSサイト画像より優先して使用
+        const prTimesImage = await findPrTimesImage(product.name);
+        if (prTimesImage) {
+          console.log(`🖼️ PRTimes画像使用: ${product.name}`);
+        }
+
         // 新商品として保存
         const productData: CvsProductData = {
           store: product.store,
@@ -87,7 +94,7 @@ export async function GET(request: NextRequest) {
           releaseDate: product.releaseDate,
           region: product.region,
           description: product.description,
-          imageUrl: product.imageUrl,
+          imageUrl: prTimesImage || product.imageUrl,
           productId: product.productId,
           detectedAt: new Date().toISOString(),
         };

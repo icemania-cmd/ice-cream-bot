@@ -19,8 +19,8 @@ export async function isAlreadyPosted(guid: string): Promise<boolean> {
 /**
  * 投稿済みとしてマークする
  */
-export async function markAsPosted(guid: string): Promise<void> {
-  await redis.set(`${KEY_PREFIX}${guid}`, "1", { ex: EXPIRY_SECONDS });
+export async function markAsPosted(guid: string, title?: string): Promise<void> {
+  await redis.set(`${KEY_PREFIX}${guid}`, title || "1", { ex: EXPIRY_SECONDS });
 }
 
 /**

@@ -122,7 +122,7 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
 
           allItems.push({
             title: item.title || "",
-            description: (item.contentSnippet || item.content || "").slice(0, 300),
+            description: (item.contentSnippet || item.content || "").slice(0, 1500),
             link: item.link || "",
             pubDate: item.pubDate || item.isoDate || new Date().toISOString(),
             guid,
@@ -170,7 +170,7 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
 
             allItems.push({
               title: item.title || "",
-              description: (item.contentSnippet || item.content || "").slice(0, 300),
+              description: (item.contentSnippet || item.content || "").slice(0, 1500),
               link: item.link || "",
               pubDate: item.pubDate || item.isoDate || new Date().toISOString(),
               guid,

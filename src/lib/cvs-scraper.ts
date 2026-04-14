@@ -155,7 +155,7 @@ ${truncatedHtml}`,
       region: string;
       description: string;
       imageUrl: string;
-    }>;
+    }> = [];
 
     try {
       // マークダウンのコードブロック記号を除去（改行付きパターンにも対応）
@@ -198,7 +198,6 @@ ${truncatedHtml}`,
         console.error(`JSON復旧も失敗（${store}）`);
         products = [];
       }
-      return [];
     }
 
     if (!Array.isArray(products)) return [];

@@ -48,18 +48,31 @@ export async function GET(request: NextRequest) {
 
     for (const article of toPost) {
       try {
-        // ① 発売日チェック: 投稿日より前の発売日はスキップ
+        // ① pubDate が30日以上前の記事はスキップ
+        const pubDateAge = Date.now() - new Date(article.pubDate).getTime();
+        if (pubDateAge > 30 * 24 * 60 * 60 * 1000) {
+          console.log(`⏭️ 記事が古すぎるためスキップ (${article.pubDate}): ${article.title}`);
+          await markAsPosted(article.guid);
+          results.push({ title: article.title, status: "skipped_old_article" });
+          continue;
+        }
+
+        // ② 発売日チェック（null=不明→skip、当日以降→skip、前日までのみ投稿OK）
         const releaseDate = await extractReleaseDate(article);
-        if (releaseDate) {
-          // 日本時間(JST=UTC+9)で今日の日付を取得
-          const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
-          const today = jstNow.toISOString().split("T")[0];
-          if (releaseDate < today) {
-            console.log(`⏭️ 発売日スキップ: ${releaseDate} < ${today} - ${article.title}`);
-            await markAsPosted(article.guid);
-            results.push({ title: article.title, status: "skipped_past_release" });
-            continue;
-          }
+        const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+        const today = jstNow.toISOString().split("T")[0];
+
+        if (!releaseDate) {
+          console.log(`⏭️ 発売日不明スキップ: ${article.title}`);
+          await markAsPosted(article.guid);
+          results.push({ title: article.title, status: "skipped_no_release_date" });
+          continue;
+        }
+        if (releaseDate <= today) {
+          console.log(`⏭️ 発売日スキップ: ${releaseDate} <= ${today} - ${article.title}`);
+          await markAsPosted(article.guid);
+          results.push({ title: article.title, status: "skipped_release_date" });
+          continue;
         }
 
         // ② Claude APIで投稿文を生成
@@ -91,29 +104,22 @@ export async function GET(request: NextRequest) {
         const result = await postTweet(postText, mediaIds);
 
         if (result.success) {
-          await markAsPosted(article.guid);
+          await markAsPosted(article.guid, article.title);
 
-          // 発売日が未来の場合はリマインド予約を保存（①で取得済みのreleaseDateを再利用）
+          // リマインド予約を保存（このポイントでは releaseDate > today が保証済み）
           try {
-            if (releaseDate) {
-              const jstNow2 = new Date(Date.now() + 9 * 60 * 60 * 1000);
-              const today2 = jstNow2.toISOString().split("T")[0];
-              if (releaseDate > today2) {
-                // 7時・12時・20時からランダムに投稿時間を選択（bot感を減らすため）
-                const REMINDER_HOURS = [7, 12, 20];
-                const chosenHour = REMINDER_HOURS[Math.floor(Math.random() * REMINDER_HOURS.length)];
-                await saveReminder({
-                  title: article.title,
-                  description: article.description,
-                  link: article.link,
-                  imageUrl: article.imageUrl,
-                  guid: article.guid,
-                  releaseDate,
-                  chosenHour,
-                });
-                console.log(`📅 リマインド予約: ${releaseDate} ${chosenHour}時 - ${article.title}`);
-              }
-            }
+            const REMINDER_HOURS = [7, 12, 20];
+            const chosenHour = REMINDER_HOURS[Math.floor(Math.random() * REMINDER_HOURS.length)];
+            await saveReminder({
+              title: article.title,
+              description: article.description,
+              link: article.link,
+              imageUrl: article.imageUrl,
+              guid: article.guid,
+              releaseDate,
+              chosenHour,
+            });
+            console.log(`📅 リマインド予約: ${releaseDate} ${chosenHour}時 - ${article.title}`);
           } catch (reminderError) {
             console.error("リマインド予約エラー:", reminderError);
           }

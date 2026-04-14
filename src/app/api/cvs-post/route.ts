@@ -57,6 +57,33 @@ function isValidPostText(text: string): boolean {
 }
 
 /**
+ * 発売日文字列をYYYY-MM-DD形式にパースする
+ * ISO形式・日本語形式（年あり/なし）に対応
+ */
+function parseReleaseDate(releaseDate: string): string | null {
+  if (!releaseDate || releaseDate === "不明") return null;
+
+  // YYYY-MM-DD形式
+  const isoMatch = releaseDate.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) return isoMatch[0];
+
+  // 日本語: 2026年1月27日
+  const jpFullMatch = releaseDate.match(/(\d{4})年(\d{1,2})月(\d{1,2})日/);
+  if (jpFullMatch) {
+    return `${jpFullMatch[1]}-${jpFullMatch[2].padStart(2, "0")}-${jpFullMatch[3].padStart(2, "0")}`;
+  }
+
+  // 日本語: 1月27日（年なし → JST当年を使用）
+  const jpMatch = releaseDate.match(/(\d{1,2})月(\d{1,2})日/);
+  if (jpMatch) {
+    const year = new Date(Date.now() + 9 * 60 * 60 * 1000).getFullYear();
+    return `${year}-${jpMatch[1].padStart(2, "0")}-${jpMatch[2].padStart(2, "0")}`;
+  }
+
+  return null;
+}
+
+/**
  * CVS商品投稿 API
  * 12時台・18時台にそれぞれ33分おきに実行
  * 1回の実行で最大1件投稿
@@ -93,17 +120,18 @@ export async function GET(request: NextRequest) {
         console.log(`投稿処理開始: ${product.store} - ${product.name}`);
 
         // 発売日チェック（二重防御：スキャン時にもチェック済みだが念のため）
-        if (!product.releaseDate || product.releaseDate === "不明") {
+        // 発売日不明・当日以降は投稿しない（前日までのみ投稿OK）
+        const parsedDate = parseReleaseDate(product.releaseDate);
+        if (!parsedDate) {
           console.log(`発売日不明スキップ: ${product.name}`);
           await markCvsProductPosted(product.productId);
           results.push({ name: product.name, store: product.store, status: "skipped", reason: "no_release_date" });
           continue;
         }
-        const releaseDateMatch = product.releaseDate.match(/\d{4}-\d{2}-\d{2}/);
-        if (releaseDateMatch && releaseDateMatch[0] < todayStr) {
-          console.log(`既発売スキップ: ${product.name} (${releaseDateMatch[0]})`);
+        if (parsedDate <= todayStr) {
+          console.log(`発売日スキップ: ${product.name} (${parsedDate})`);
           await markCvsProductPosted(product.productId);
-          results.push({ name: product.name, store: product.store, status: "skipped", reason: "already_released" });
+          results.push({ name: product.name, store: product.store, status: "skipped", reason: "release_date_passed" });
           continue;
         }
 

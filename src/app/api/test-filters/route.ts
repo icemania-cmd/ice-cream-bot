@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
 
   // ===== PRTimes RSSの全記事を検査 =====
 
-  let articles;
+  let articles: Awaited<ReturnType<typeof fetchIceCreamNews>> = [];
   let rssError: string | null = null;
   try {
     articles = await fetchIceCreamNews();
@@ -148,7 +148,7 @@ export async function GET(request: NextRequest) {
     reason: string;
   };
 
-  let cvsProducts;
+  let cvsProducts: Awaited<ReturnType<typeof getCvsProductsToPost>> = [];
   let cvsError: string | null = null;
   try {
     // 上限を大きくして全件取得

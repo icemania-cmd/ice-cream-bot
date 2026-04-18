@@ -118,28 +118,21 @@ export async function uploadImageToX(imageUrl: string): Promise<string | null> {
     console.log(`画像サイズ: ${imgBuffer.length} bytes, type: ${contentType}`);
 
     // 2. X Media Upload API (v1.1) にアップロード
+    // media_data（base64）はapplication/x-www-form-urlencodedで送信し、OAuth署名にも含める
     const uploadUrl = "https://upload.twitter.com/1.1/media/upload.json";
     const base64Data = imgBuffer.toString("base64");
 
-    // multipart/form-data でアップロード
-    const boundary = `----FormBoundary${crypto.randomBytes(8).toString("hex")}`;
-    const bodyParts = [
-      `--${boundary}\r\n`,
-      `Content-Disposition: form-data; name="media_data"\r\n\r\n`,
-      `${base64Data}\r\n`,
-      `--${boundary}--\r\n`,
-    ];
-    const body = bodyParts.join("");
-
-    const authHeader = buildAuthHeader("POST", uploadUrl, credentials);
+    const authHeader = buildAuthHeader("POST", uploadUrl, credentials, {
+      media_data: base64Data,
+    });
 
     const uploadRes = await fetch(uploadUrl, {
       method: "POST",
       headers: {
         Authorization: authHeader,
-        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-      body,
+      body: `media_data=${encodeURIComponent(base64Data)}`,
     });
 
     const uploadData = await uploadRes.json();

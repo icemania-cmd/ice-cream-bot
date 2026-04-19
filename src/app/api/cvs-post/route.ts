@@ -50,9 +50,9 @@ function isValidPostText(text: string): boolean {
     return false;
   }
 
-  // 【コンビニ】で始まっているかチェック
-  if (!text.startsWith("【コンビニ】")) {
-    console.error(`投稿文が【コンビニ】で始まっていない: ${text.substring(0, 30)}`);
+  // 【コンビニ】または【新商品】で始まっているかチェック（メーカー直販は【新商品】）
+  if (!text.startsWith("【コンビニ】") && !text.startsWith("【新商品】")) {
+    console.error(`投稿文の先頭タグが不正: ${text.substring(0, 30)}`);
     return false;
   }
 

@@ -10,10 +10,6 @@ import {
   setCachedReleaseDate,
 } from "@/lib/store";
 
-// Route Segment Config: vercel.json の functions はApp Routerで未適用の場合あり
-export const maxDuration = 300;
-export const dynamic = "force-dynamic";
-
 // 1回のCron実行で投稿する最大件数（通常記事用）
 // 「翌日発売」記事はこの上限とは別枠で必ず処理する（取りこぼし防止）。
 const MAX_POSTS_PER_RUN = 5;

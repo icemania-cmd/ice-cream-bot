@@ -8,9 +8,6 @@ import {
 } from "@/lib/store";
 import type { PressRelease } from "@/lib/rss";
 
-export const maxDuration = 60;
-export const dynamic = "force-dynamic";
-
 /**
  * リマインド投稿 API
  * 毎日20:00 JST に実行され、翌日発売の商品をリマインド投稿する

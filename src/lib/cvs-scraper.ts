@@ -37,6 +37,11 @@ const CVS_SITES = [
     url: "https://www.ministop.co.jp/syohin/icecream.html",
     baseUrl: "https://www.ministop.co.jp",
   },
+  {
+    store: "竹下製菓",
+    url: "https://takeshita-seika.jp/pages/41/",
+    baseUrl: "https://takeshita-seika.jp",
+  },
 ];
 
 /**
@@ -109,6 +114,14 @@ async function extractProductsFromHtml(
       cleanedHtml.length > 50000 ? cleanedHtml.substring(0, 50000) : cleanedHtml;
     console.log(`${store}: HTML軽量化 ${html.length} → ${cleanedHtml.length} → 送信${truncatedHtml.length}文字`);
 
+    const takeshitaNote = store === "竹下製菓" ? `
+【竹下製菓 特別ルール】
+このページは竹下製菓の新商品ニュース一覧です。
+抽出対象：ブラックモンブラン・ミルクック・トラキチ君・くろしろ君など「アイスクリーム」「アイス」本体の新商品のみ。
+絶対に含めないもの：マシュマロ・クランチチョコ・ふわふわケーキ・鶴の里など、アイスのブランド名を冠したお菓子・チョコレート・スナック類。
+発売日はニュース記事のタイトルや本文から抽出すること（例：「4月7日より発売」→ releaseDate: "2026-04-07"）。
+アイスか判断できないものは含めない。` : "";
+
     const message = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 8000,
@@ -118,6 +131,7 @@ async function extractProductsFromHtml(
           content: `以下のHTMLは「${store}」の商品ページです。
 このHTMLから **アイスクリーム・アイス・ジェラート・ソフトクリーム** の商品情報のみを抽出してください。
 ${store === "ミニストップ" ? "ハロハロ・パフェなどのコールドスイーツも含めてOKです。" : ""}
+${takeshitaNote}
 
 【重要】アイスクリーム類以外の商品（スイーツ、飲料、おにぎり、弁当、パンなど）は絶対に含めないでください。
 

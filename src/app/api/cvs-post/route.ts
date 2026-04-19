@@ -122,6 +122,17 @@ export async function GET(request: NextRequest) {
       try {
         console.log(`投稿処理開始: ${product.store} - ${product.name}`);
 
+        // 竹下製菓は販売エリアが不明な場合は投稿しない
+        if (product.store === "竹下製菓") {
+          const region = product.region?.trim() ?? "";
+          if (!region || region === "不明") {
+            console.log(`販売エリア不明のためスキップ（竹下製菓）: ${product.name}`);
+            await markCvsProductPosted(product.productId);
+            results.push({ name: product.name, store: product.store, status: "skipped", reason: "unknown_region" });
+            continue;
+          }
+        }
+
         // 発売日チェック（二重防御：スキャン時にもチェック済みだが念のため）
         // 発売日不明・当日以降は投稿しない（前日までのみ投稿OK）
         const parsedDate = parseReleaseDate(product.releaseDate);

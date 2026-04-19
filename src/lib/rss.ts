@@ -10,6 +10,21 @@ export interface PressRelease {
 }
 
 /**
+ * media:content 要素からURLを抽出する
+ * rss-parser は media:content を { url: "..." } または { $: { url: "..." } } 形式で返す
+ */
+function extractMediaContentUrl(mediaContent: unknown): string | undefined {
+  if (!mediaContent) return undefined;
+  if (typeof mediaContent === "string") return mediaContent || undefined;
+  if (typeof mediaContent === "object") {
+    const mc = mediaContent as Record<string, unknown>;
+    const url = (mc.url as string) || ((mc.$ as Record<string, string>)?.url);
+    return url || undefined;
+  }
+  return undefined;
+}
+
+/**
  * RSSのcontent内から画像URLを抽出する
  * PR TIMESのRSSにはHTMLコンテンツ内に画像が含まれる
  */
@@ -116,7 +131,7 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
           seenGuids.add(guid);
           // RSSコンテンツから画像URLを抽出
           const imageUrl =
-            (item as Record<string, unknown>)["media:content"]?.toString() ||
+            extractMediaContentUrl((item as Record<string, unknown>)["media:content"]) ||
             extractImageFromContent(item.content || "") ||
             (item.enclosure as { url?: string })?.url;
 
@@ -164,7 +179,7 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
           if (isRelevant) {
             seenGuids.add(guid);
             const fbImageUrl =
-              (item as Record<string, unknown>)["media:content"]?.toString() ||
+              extractMediaContentUrl((item as Record<string, unknown>)["media:content"]) ||
               extractImageFromContent(item.content || "") ||
               (item.enclosure as { url?: string })?.url;
 

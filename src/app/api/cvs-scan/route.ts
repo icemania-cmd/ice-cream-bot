@@ -8,6 +8,9 @@ import {
   type CvsProductData,
 } from "@/lib/store";
 
+export const maxDuration = 300;
+export const dynamic = "force-dynamic";
+
 /**
  * CVSコンビニ商品スキャン API
  * 2時間おきに全コンビニサイトを巡回し、新商品をRedisに保存する

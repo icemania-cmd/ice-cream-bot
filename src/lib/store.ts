@@ -173,45 +173,39 @@ export async function isCvsProductKnown(productId: string): Promise<boolean> {
 export async function isDuplicateWithPrTimes(productName: string): Promise<boolean> {
   const postedKeys = await redis.keys(`${KEY_PREFIX}*`);
   for (const key of postedKeys) {
-    const value = await redis.get<string>(key);
-    if (!value || typeof value !== "string") continue;
-    // JSON形式（{t: title, i: imageUrl}）またはプレーン文字列を解析
-    let title = value;
-    try {
-      const parsed = JSON.parse(value);
-      if (parsed.t) title = parsed.t;
-    } catch {
-      // プレーン文字列そのまま使用
+    // @upstash/redis はJSON値を自動デシリアライズするため string/object 両方を処理
+    const value = await redis.get(key);
+    if (!value) continue;
+    let title = "";
+    if (typeof value === "object" && value !== null) {
+      title = (value as Record<string, string>).t || "";
+    } else if (typeof value === "string") {
+      title = value;
+    } else {
+      continue;
     }
-    if (title.includes(productName)) return true;
+    if (title && title.includes(productName)) return true;
   }
   return false;
 }
 
-/**
- * CVS商品名に対応するPR Times記事の画像URLを返す
- * 商品名またはその構成キーワードとタイトルを部分一致で検索
- * 見つからない場合はnullを返す
- */
+/** PR Times画像URL検索 */
 export async function findPrTimesImage(productName: string): Promise<string | null> {
   const postedKeys = await redis.keys(`${KEY_PREFIX}*`);
-  // 商品名 + 区切り文字で分割した3文字以上のキーワードで検索
   const keywords = [
     productName,
     ...productName.split(/[\s　・「」、。！？〜\/＆&]+/).filter(k => k.length >= 3),
   ];
   for (const key of postedKeys) {
-    const value = await redis.get<string>(key);
-    if (!value || typeof value !== "string") continue;
+    const value = await redis.get(key);
+    if (!value) continue;
     let title = "";
     let imageUrl = "";
-    try {
-      const parsed = JSON.parse(value);
-      title = parsed.t || "";
-      imageUrl = parsed.i || "";
-    } catch {
-      continue; // JSON形式でなければ imageUrl は保存されていない
-    }
+    if (typeof value === "object" && value !== null) {
+      const obj = value as Record<string, string>;
+      title = obj.t || "";
+      imageUrl = obj.i || "";
+    } else { continue; }
     if (!imageUrl || !title) continue;
     if (keywords.some(kw => title.includes(kw))) return imageUrl;
   }

@@ -3,6 +3,9 @@ import { generateCvsPost } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
 import { getCvsProductsToPost, markCvsProductPosted } from "@/lib/store";
 
+export const maxDuration = 60;
+export const dynamic = "force-dynamic";
+
 const MAX_POSTS_PER_RUN = 1;
 
 /**

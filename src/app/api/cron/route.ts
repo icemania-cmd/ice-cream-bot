@@ -70,6 +70,9 @@ export async function GET(request: NextRequest) {
 
     // 4. 事前フィルタ: 古い記事 / 発売日不明 / 発売日が過去・当日 はキューから除外し
     //    再処理しないよう posted マークをつける
+    // ただし「発売日不明」かつ pubDate が新しい場合は一時失敗の可能性が高いので
+    // posted マークせず次回 cron で再試行する（Claude API ハイカップ等の取りこぼし防止）
+    const RETRY_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 3日以内の記事は再試行を許可
     const eligible: { article: PressRelease; releaseDate: string }[] = [];
     for (const { article, releaseDate } of enriched) {
       const pubDateAge = Date.now() - new Date(article.pubDate).getTime();
@@ -79,8 +82,14 @@ export async function GET(request: NextRequest) {
         continue;
       }
       if (!releaseDate) {
-        console.log(`⏭️ 発売日不明スキップ: ${article.title}`);
-        await markAsPosted(article.guid);
+        if (pubDateAge < RETRY_WINDOW_MS) {
+          // 新しい記事の発売日不明は posted マークせず次回再試行
+          console.log(`⏭️ 発売日不明（再試行待ち）: ${article.title}`);
+          await setCachedReleaseDate(article.guid, null); // 短期キャッシュ済み・再抽出を防ぐ
+        } else {
+          console.log(`⏭️ 発売日不明スキップ（諦める）: ${article.title}`);
+          await markAsPosted(article.guid);
+        }
         continue;
       }
       if (releaseDate <= today) {

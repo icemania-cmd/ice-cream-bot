@@ -123,14 +123,19 @@ export async function getCachedReleaseDate(
 }
 
 /**
- * 抽出した発売日をキャッシュに保存（30日間）
+ * 抽出した発売日をキャッシュに保存
+ * - 成功（YYYY-MM-DD）: 30日間保持
+ * - 失敗（null）: 1時間だけ保持（次回 cron で再試行できるようにする）
+ *   発売日抽出は Claude API の一時的な不調や記事ページ未生成等で失敗する。
+ *   ここで長期キャッシュすると新商品が永久に投稿されないため短期にする。
  */
 export async function setCachedReleaseDate(
   guid: string,
   date: string | null
 ): Promise<void> {
+  const ttl = date ? EXPIRY_SECONDS : 60 * 60; // 失敗時は1時間
   await redis.set(`${RELEASE_DATE_PREFIX}${guid}`, date ?? "NONE", {
-    ex: EXPIRY_SECONDS,
+    ex: ttl,
   });
 }
 

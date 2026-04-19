@@ -105,6 +105,35 @@ export async function markReminderAsPosted(guid: string): Promise<void> {
   await redis.set(`reminder_posted:${guid}`, "1", { ex: EXPIRY_SECONDS });
 }
 
+// ===== 発売日キャッシュ（Claude API節約用） =====
+
+const RELEASE_DATE_PREFIX = "release_date:";
+
+/**
+ * 抽出済み発売日をキャッシュから取得
+ * 戻り値: "YYYY-MM-DD" / null（キャッシュ済みだが発売日不明）/ undefined（キャッシュ未保存）
+ */
+export async function getCachedReleaseDate(
+  guid: string
+): Promise<string | null | undefined> {
+  const v = await redis.get<string>(`${RELEASE_DATE_PREFIX}${guid}`);
+  if (v === null || v === undefined) return undefined;
+  if (v === "NONE") return null;
+  return typeof v === "string" ? v : String(v);
+}
+
+/**
+ * 抽出した発売日をキャッシュに保存（30日間）
+ */
+export async function setCachedReleaseDate(
+  guid: string,
+  date: string | null
+): Promise<void> {
+  await redis.set(`${RELEASE_DATE_PREFIX}${guid}`, date ?? "NONE", {
+    ex: EXPIRY_SECONDS,
+  });
+}
+
 // ===== CVSコンビニ商品スクレイピング機能 =====
 
 const CVS_PRODUCT_PREFIX = "cvs_product:";

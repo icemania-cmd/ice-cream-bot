@@ -1,12 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchIceCreamNews } from "@/lib/rss";
+import { fetchIceCreamNews, type PressRelease } from "@/lib/rss";
 import { generatePost, extractReleaseDate } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
-import { isAlreadyPosted, markAsPosted, saveReminder } from "@/lib/store";
+import {
+  isAlreadyPosted,
+  markAsPosted,
+  saveReminder,
+  getCachedReleaseDate,
+  setCachedReleaseDate,
+} from "@/lib/store";
 
-// 1回のCron実行で投稿する最大件数
-// Xアルゴリズム対策: 33分おきにcronを実行し、1件ずつ投稿する
-const MAX_POSTS_PER_RUN = 1;
+// 1回のCron実行で投稿する最大件数（通常記事用）
+// 「翌日発売」記事はこの上限とは別枠で必ず処理する（取りこぼし防止）。
+const MAX_POSTS_PER_RUN = 5;
+
+type Enriched = { article: PressRelease; releaseDate: string | null };
 
 export async function GET(request: NextRequest) {
   // Vercel Cronからの呼び出しを認証
@@ -23,7 +31,7 @@ export async function GET(request: NextRequest) {
     console.log(`取得記事数: ${articles.length}`);
 
     // 2. 未投稿の記事をフィルタ
-    const newArticles = [];
+    const newArticles: PressRelease[] = [];
     for (const article of articles) {
       const posted = await isAlreadyPosted(article.guid);
       if (!posted) {
@@ -42,44 +50,69 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 3. 最大件数まで投稿
-    const results = [];
-    const toPost = newArticles.slice(0, MAX_POSTS_PER_RUN);
+    // 3. 全未投稿記事の発売日を抽出（キャッシュ優先・Claude API節約）
+    const enriched: Enriched[] = await Promise.all(
+      newArticles.map(async (article) => {
+        let releaseDate = await getCachedReleaseDate(article.guid);
+        if (releaseDate === undefined) {
+          releaseDate = await extractReleaseDate(article);
+          await setCachedReleaseDate(article.guid, releaseDate);
+        }
+        return { article, releaseDate };
+      })
+    );
 
-    for (const article of toPost) {
+    const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const today = jstNow.toISOString().split("T")[0];
+    const tomorrowJst = new Date(jstNow);
+    tomorrowJst.setDate(tomorrowJst.getDate() + 1);
+    const tomorrowStr = tomorrowJst.toISOString().split("T")[0];
+
+    // 4. 事前フィルタ: 古い記事 / 発売日不明 / 発売日が過去・当日 はキューから除外し
+    //    再処理しないよう posted マークをつける
+    const eligible: { article: PressRelease; releaseDate: string }[] = [];
+    for (const { article, releaseDate } of enriched) {
+      const pubDateAge = Date.now() - new Date(article.pubDate).getTime();
+      if (pubDateAge > 30 * 24 * 60 * 60 * 1000) {
+        console.log(`⏭️ 記事が古すぎるためスキップ (${article.pubDate}): ${article.title}`);
+        await markAsPosted(article.guid);
+        continue;
+      }
+      if (!releaseDate) {
+        console.log(`⏭️ 発売日不明スキップ: ${article.title}`);
+        await markAsPosted(article.guid);
+        continue;
+      }
+      if (releaseDate <= today) {
+        console.log(`⏭️ 発売日が過去/当日スキップ: ${releaseDate} <= ${today} - ${article.title}`);
+        await markAsPosted(article.guid);
+        continue;
+      }
+      eligible.push({ article, releaseDate });
+    }
+
+    // 5. 発売日が近い順にソート
+    eligible.sort((a, b) => a.releaseDate.localeCompare(b.releaseDate));
+
+    // 6. 緊急（翌日発売）は全件処理 + 通常記事は MAX_POSTS_PER_RUN まで
+    const urgent = eligible.filter((e) => e.releaseDate <= tomorrowStr);
+    const normal = eligible.filter((e) => e.releaseDate > tomorrowStr);
+    const normalSlots = Math.max(0, MAX_POSTS_PER_RUN - urgent.length);
+    const toProcess = [...urgent, ...normal.slice(0, normalSlots)];
+
+    console.log(
+      `処理予定: 緊急(翌日発売)=${urgent.length}件 / 通常=${Math.min(normal.length, normalSlots)}件 / 合計=${toProcess.length}件`
+    );
+
+    const results: Array<Record<string, unknown>> = [];
+
+    for (const { article, releaseDate } of toProcess) {
       try {
-        // ① pubDate が30日以上前の記事はスキップ
-        const pubDateAge = Date.now() - new Date(article.pubDate).getTime();
-        if (pubDateAge > 30 * 24 * 60 * 60 * 1000) {
-          console.log(`⏭️ 記事が古すぎるためスキップ (${article.pubDate}): ${article.title}`);
-          await markAsPosted(article.guid);
-          results.push({ title: article.title, status: "skipped_old_article" });
-          continue;
-        }
-
-        // ② 発売日チェック（null=不明→skip、当日以降→skip、前日までのみ投稿OK）
-        const releaseDate = await extractReleaseDate(article);
-        const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
-        const today = jstNow.toISOString().split("T")[0];
-
-        if (!releaseDate) {
-          console.log(`⏭️ 発売日不明スキップ: ${article.title}`);
-          await markAsPosted(article.guid);
-          results.push({ title: article.title, status: "skipped_no_release_date" });
-          continue;
-        }
-        if (releaseDate <= today) {
-          console.log(`⏭️ 発売日スキップ: ${releaseDate} <= ${today} - ${article.title}`);
-          await markAsPosted(article.guid);
-          results.push({ title: article.title, status: "skipped_release_date" });
-          continue;
-        }
-
-        // ③ Claude APIで投稿文を生成
+        // Claude APIで投稿文を生成
         const postText = await generatePost(article);
         console.log(`生成された投稿文:\n${postText}\n`);
 
-        // ④ 新商品以外（SKIP）はXに投稿せず記録だけして終了
+        // 新商品以外（SKIP）はXに投稿せず記録だけして終了
         if (postText.trim() === "SKIP") {
           console.log(`⏭️ 新商品以外のためスキップ: ${article.title}`);
           await markAsPosted(article.guid);
@@ -108,13 +141,7 @@ export async function GET(request: NextRequest) {
 
           // リマインド予約を保存（発売が2日以上先の場合のみ）
           // 翌日発売品は本投稿が「前日告知」を兼ねるため不要。
-          // また翌日発売にリマインドを保存すると chosenHour=7 が当日7:00 UTC 実行済みで
-          // 永久にスキップされるバグ、または12/20時に同日二重投稿になるバグを防ぐ。
           try {
-            const tomorrowJst = new Date(jstNow);
-            tomorrowJst.setDate(tomorrowJst.getDate() + 1);
-            const tomorrowStr = tomorrowJst.toISOString().split("T")[0];
-
             if (releaseDate > tomorrowStr) {
               const REMINDER_HOURS = [7, 12, 20];
               const chosenHour = REMINDER_HOURS[Math.floor(Math.random() * REMINDER_HOURS.length)];
@@ -138,6 +165,8 @@ export async function GET(request: NextRequest) {
           results.push({
             title: article.title,
             tweetId: result.tweetId,
+            releaseDate,
+            urgent: releaseDate <= tomorrowStr,
             status: "success",
           });
           console.log(`✅ 投稿成功: ${article.title}`);
@@ -149,7 +178,6 @@ export async function GET(request: NextRequest) {
           });
           console.error(`❌ 投稿失敗: ${article.title} - ${result.error}`);
         }
-
       } catch (error) {
         console.error(`エラー: ${article.title}`, error);
         results.push({
@@ -161,7 +189,10 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      message: `${results.filter((r) => r.status === "success").length}/${toPost.length}件投稿完了`,
+      message: `${results.filter((r) => r.status === "success").length}/${toProcess.length}件投稿完了`,
+      urgent: urgent.length,
+      normal: Math.min(normal.length, normalSlots),
+      pending: Math.max(0, normal.length - normalSlots),
       results,
     });
   } catch (error) {

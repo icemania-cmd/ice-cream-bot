@@ -72,8 +72,12 @@ export async function GET(request: NextRequest) {
           imageUrl: reminder.imageUrl,
         };
 
-        // リマインド投稿文を生成
-        const postText = await generateReminderPost(pr);
+        // リマインド投稿文を生成（【リマインド】が抜けた場合は強制補完）
+        let postText = await generateReminderPost(pr);
+        if (!postText.startsWith("【リマインド】")) {
+          console.warn(`⚠️ 【リマインド】が抜けていたため補完: ${postText.substring(0, 50)}`);
+          postText = "【リマインド】" + postText;
+        }
         console.log(`リマインド投稿文:\n${postText}\n`);
 
         // 画像がある場合はアップロード

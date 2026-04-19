@@ -117,8 +117,8 @@ export async function GET(request: NextRequest) {
 
     for (const { article, releaseDate } of toProcess) {
       try {
-        // Claude APIで投稿文を生成
-        const postText = await generatePost(article);
+        // Claude APIで投稿文を生成（【新商品】が抜けた場合は強制補完）
+        let postText = await generatePost(article);
         console.log(`生成された投稿文:\n${postText}\n`);
 
         // 新商品以外（SKIP）はXに投稿せず記録だけして終了
@@ -127,6 +127,11 @@ export async function GET(request: NextRequest) {
           await markAsPosted(article.guid);
           results.push({ title: article.title, status: "skipped_not_new_product" });
           continue;
+        }
+
+        if (!postText.startsWith("【新商品】")) {
+          console.warn(`⚠️ 【新商品】が抜けていたため補完: ${postText.substring(0, 50)}`);
+          postText = "【新商品】" + postText;
         }
 
         // RSSから画像が取れなかった場合のみog:imageを取得（全件取得はタイムアウトの原因）

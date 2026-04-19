@@ -42,8 +42,9 @@ function extractImageFromContent(content: string): string | undefined {
 
 /**
  * プレスリリースページからog:image を取得するフォールバック
+ * 投稿直前に個別呼び出しする用途（全件一括取得はタイムアウトの原因になる）
  */
-async function fetchOgImage(url: string): Promise<string | undefined> {
+export async function fetchOgImage(url: string): Promise<string | undefined> {
   try {
     const res = await fetch(url, {
       headers: { "User-Agent": "IceCreamBot/1.0" },
@@ -198,14 +199,6 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
         const fbMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
         console.error(`フォールバックも失敗: ${fbMsg}`);
       }
-    }
-  }
-
-  // RSSから画像が取れなかった記事は、プレスリリースページからog:imageを取得
-  for (const item of allItems) {
-    if (!item.imageUrl && item.link) {
-      console.log(`og:image取得: ${item.link}`);
-      item.imageUrl = await fetchOgImage(item.link);
     }
   }
 

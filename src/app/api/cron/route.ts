@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchIceCreamNews, type PressRelease } from "@/lib/rss";
+import { fetchIceCreamNews, fetchOgImage, type PressRelease } from "@/lib/rss";
 import { generatePost, extractReleaseDate } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
 import {
@@ -127,6 +127,12 @@ export async function GET(request: NextRequest) {
           await markAsPosted(article.guid);
           results.push({ title: article.title, status: "skipped_not_new_product" });
           continue;
+        }
+
+        // RSSから画像が取れなかった場合のみog:imageを取得（全件取得はタイムアウトの原因）
+        if (!article.imageUrl && article.link) {
+          console.log(`og:image取得: ${article.link}`);
+          article.imageUrl = await fetchOgImage(article.link);
         }
 
         // 画像がある場合はアップロード

@@ -135,6 +135,28 @@ export async function isCvsProductKnown(productId: string): Promise<boolean> {
 }
 
 /**
+ * PR TIMES記事がCVSで既に投稿済みかチェックする
+ * 記事タイトルに CVS投稿済み商品名が含まれていれば重複とみなす
+ */
+export async function isDuplicateWithCvs(articleTitle: string): Promise<boolean> {
+  const postedKeys = await redis.keys(`${CVS_POSTED_PREFIX}*`);
+  for (const key of postedKeys) {
+    const productId = key.slice(CVS_POSTED_PREFIX.length);
+    const productData = await redis.get<string>(`${CVS_PRODUCT_PREFIX}${productId}`);
+    if (!productData) continue;
+    try {
+      const product = (typeof productData === "string" ? JSON.parse(productData) : productData) as CvsProductData;
+      if (product.name && product.name.length >= 4 && articleTitle.includes(product.name)) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+/**
  * CVS商品名がPR TIMESで既に投稿済みかチェックする
  * 商品名の部分一致で重複を防止
  */

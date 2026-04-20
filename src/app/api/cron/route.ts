@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchIceCreamNews } from "@/lib/rss";
 import { generatePost, extractReleaseDate } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
-import { isAlreadyPosted, markAsPosted, saveReminder } from "@/lib/store";
+import { isAlreadyPosted, markAsPosted, saveReminder, isDuplicateWithCvs } from "@/lib/store";
 
 // 1回のCron実行で投稿する最大件数
 // Xアルゴリズム対策: 33分おきにcronを実行し、1件ずつ投稿する
@@ -48,7 +48,16 @@ export async function GET(request: NextRequest) {
 
     for (const article of toPost) {
       try {
-        // ① pubDate が30日以上前の記事はスキップ
+        // ① CVS投稿済み重複チェック（Claude API呼び出しの前に実行）
+        const cvsDup = await isDuplicateWithCvs(article.title);
+        if (cvsDup) {
+          console.log(`⏭️ CVS投稿済みのためスキップ: ${article.title}`);
+          await markAsPosted(article.guid);
+          results.push({ title: article.title, status: "skipped_cvs_duplicate" });
+          continue;
+        }
+
+        // ② pubDate が30日以上前の記事はスキップ
         const pubDateAge = Date.now() - new Date(article.pubDate).getTime();
         if (pubDateAge > 30 * 24 * 60 * 60 * 1000) {
           console.log(`⏭️ 記事が古すぎるためスキップ (${article.pubDate}): ${article.title}`);
@@ -57,7 +66,7 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
-        // ② 発売日チェック（null=不明→skip、当日以降→skip、前日までのみ投稿OK）
+        // ③ 発売日チェック（null=不明→skip、当日以降→skip、前日までのみ投稿OK）
         const releaseDate = await extractReleaseDate(article);
         const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
         const today = jstNow.toISOString().split("T")[0];
@@ -75,11 +84,11 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
-        // ③ Claude APIで投稿文を生成
+        // ④ Claude APIで投稿文を生成
         const postText = await generatePost(article);
         console.log(`生成された投稿文:\n${postText}\n`);
 
-        // ④ 新商品以外（SKIP）はXに投稿せず記録だけして終了
+        // ⑤ 新商品以外（SKIP）はXに投稿せず記録だけして終了
         if (postText.trim() === "SKIP") {
           console.log(`⏭️ 新商品以外のためスキップ: ${article.title}`);
           await markAsPosted(article.guid);

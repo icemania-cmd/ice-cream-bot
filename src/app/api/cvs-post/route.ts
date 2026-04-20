@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateCvsPost } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
-import { getCvsProductsToPost, markCvsProductPosted, saveReminder } from "@/lib/store";
+import { getCvsProductsToPost, markCvsProductPosted, saveReminder, isDuplicateWithPrTimes } from "@/lib/store";
 
 const MAX_POSTS_PER_RUN = 1;
 
@@ -118,6 +118,15 @@ export async function GET(request: NextRequest) {
     for (const product of products) {
       try {
         console.log(`投稿処理開始: ${product.store} - ${product.name}`);
+
+        // PR TIMES重複チェック（スキャン後にPR TIMESが投稿した場合の漏れを防ぐ）
+        const prDup = await isDuplicateWithPrTimes(product.name);
+        if (prDup) {
+          console.log(`⏭️ PR TIMES投稿済みのためスキップ: ${product.name}`);
+          await markCvsProductPosted(product.productId);
+          results.push({ name: product.name, store: product.store, status: "skipped", reason: "prtimes_duplicate" });
+          continue;
+        }
 
         // 発売日チェック（二重防御：スキャン時にもチェック済みだが念のため）
         // 発売日不明・当日以降は投稿しない（前日までのみ投稿OK）

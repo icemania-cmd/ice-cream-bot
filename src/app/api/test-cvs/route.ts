@@ -15,7 +15,7 @@ const CVS_SITES = [
   },
   {
     name: "ミニストップ",
-    url: "https://www.ministop.co.jp/syohin/sweets/",
+    url: "https://www.ministop.co.jp/syohin/icecream.html",
   },
 ];
 

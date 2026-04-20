@@ -135,10 +135,11 @@ export async function isCvsProductKnown(productId: string): Promise<boolean> {
 }
 
 /**
- * PR TIMES記事がCVSで既に投稿済みかチェックする
- * 記事タイトルに CVS投稿済み商品名が含まれていれば重複とみなす
+ * PR TIMES記事がCVSで既に投稿済み・または投稿待ちかチェックする
+ * 記事タイトルに CVS商品名が含まれていれば重複とみなす
  */
 export async function isDuplicateWithCvs(articleTitle: string): Promise<boolean> {
+  // 投稿済みチェック
   const postedKeys = await redis.keys(`${CVS_POSTED_PREFIX}*`);
   for (const key of postedKeys) {
     const productId = key.slice(CVS_POSTED_PREFIX.length);
@@ -153,6 +154,22 @@ export async function isDuplicateWithCvs(articleTitle: string): Promise<boolean>
       continue;
     }
   }
+
+  // 投稿キュー（投稿待ち）チェック — スキャン後・投稿前の窓でも二重投稿を防ぐ
+  const queueKeys = await redis.keys(`${CVS_QUEUE_PREFIX}*`);
+  for (const key of queueKeys) {
+    const productData = await redis.get<string>(key);
+    if (!productData) continue;
+    try {
+      const product = (typeof productData === "string" ? JSON.parse(productData) : productData) as CvsProductData;
+      if (product.name && product.name.length >= 4 && articleTitle.includes(product.name)) {
+        return true;
+      }
+    } catch {
+      continue;
+    }
+  }
+
   return false;
 }
 

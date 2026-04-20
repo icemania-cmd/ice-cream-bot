@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateReminderPost } from "@/lib/comment";
+import { generateReminderPost, generateCvsReminderPost } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
 import {
   getRemindersForDate,
@@ -62,18 +62,26 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
-        // PressRelease形式に変換
-        const pr: PressRelease = {
-          title: reminder.title,
-          description: reminder.description,
-          link: reminder.link,
-          pubDate: "",
-          guid: reminder.guid,
-          imageUrl: reminder.imageUrl,
-        };
-
-        // リマインド投稿文を生成
-        const postText = await generateReminderPost(pr);
+        // リマインド投稿文を生成（CVSとPR TIMESで分岐）
+        let postText: string;
+        if (reminder.type === "cvs") {
+          postText = await generateCvsReminderPost({
+            name: reminder.title,
+            store: reminder.store || "",
+            description: reminder.description,
+            releaseDate: reminder.releaseDate,
+          });
+        } else {
+          const pr: PressRelease = {
+            title: reminder.title,
+            description: reminder.description,
+            link: reminder.link || "",
+            pubDate: "",
+            guid: reminder.guid,
+            imageUrl: reminder.imageUrl,
+          };
+          postText = await generateReminderPost(pr);
+        }
         console.log(`リマインド投稿文:\n${postText}\n`);
 
         // 画像がある場合はアップロード

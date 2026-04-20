@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateCvsPost } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
-import { getCvsProductsToPost, markCvsProductPosted } from "@/lib/store";
+import { getCvsProductsToPost, markCvsProductPosted, saveReminder } from "@/lib/store";
 
 const MAX_POSTS_PER_RUN = 1;
 
@@ -174,6 +174,35 @@ export async function GET(request: NextRequest) {
 
         if (result.success) {
           await markCvsProductPosted(product.productId);
+
+          // 発売日が「明後日以降」の場合はリマインド予約を保存
+          // 翌日発売品は本投稿が「前日告知」を兼ねるため不要
+          try {
+            const tomorrowJst = new Date(nowJst);
+            tomorrowJst.setDate(tomorrowJst.getDate() + 1);
+            const tomorrowStr = tomorrowJst.toISOString().split("T")[0];
+
+            if (parsedDate > tomorrowStr) {
+              const REMINDER_HOURS = [7, 12, 20];
+              const chosenHour = REMINDER_HOURS[Math.floor(Math.random() * REMINDER_HOURS.length)];
+              await saveReminder({
+                title: product.name,
+                description: product.description || "",
+                guid: `cvs_reminder:${product.productId}`,
+                imageUrl: product.imageUrl,
+                releaseDate: parsedDate,
+                chosenHour,
+                type: "cvs",
+                store: product.store,
+              });
+              console.log(`📅 CVSリマインド予約: ${parsedDate} ${chosenHour}時 - ${product.name}`);
+            } else {
+              console.log(`📅 CVSリマインド不要（翌日発売のため本投稿が前日告知を兼ねる）: ${product.name}`);
+            }
+          } catch (reminderError) {
+            console.error("CVSリマインド予約エラー:", reminderError);
+          }
+
           results.push({
             name: product.name,
             store: product.store,

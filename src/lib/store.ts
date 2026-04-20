@@ -42,11 +42,13 @@ const REMINDER_PREFIX = "reminder:";
 export interface ReminderData {
   title: string;
   description: string;
-  link: string;
+  link?: string;
   imageUrl?: string;
   guid: string;
   releaseDate: string; // YYYY-MM-DD
   chosenHour?: number; // リマインド投稿時間（JST）: 7 / 12 / 20
+  type?: "prtimes" | "cvs"; // リマインド種別
+  store?: string; // CVSリマインド用: コンビニ名
 }
 
 /**

@@ -1,15 +1,52 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { PressRelease } from "./rss";
 import type { CvsProductData } from "./store";
+import type { ReminderType } from "./store";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
 });
 
+// 投稿末尾のひと言バリエーション（30種超）
+// プロンプトに埋め込み、Claude がランダムに1つ選ぶよう指示する
+const CLOSING_REMARKS = `
+- 楽しみ！
+- 気になる〜
+- いよいよ！
+- これは絶対買う
+- 見かけたら即買い
+- 推しの一本になりそう
+- 早速チェックします
+- 発売日にチェックを
+- これは試したい
+- 情報入りました
+- どんな味なんだろう
+- 好きなやつです
+- たまりませんね
+- 買うしかない
+- コンビニ寄らなきゃ
+- チェック推奨
+- 気になりすぎる
+- これは期待大
+- いいですね
+- ぜひチェックを
+- 発売が待ち遠しい
+- 要チェックです
+- 見逃せない
+- これは嬉しい
+- さすがですね
+- ちょっと待って、これすごくない？
+- 個人的に好きなシリーズ
+- まずは一本試してみます
+- これはうれしい新フレーバー
+- ファンには堪らないですね
+- 毎年この季節が来ると思い出す一本
+- 外せない一本
+- ひそかに待ってたやつ
+`;
+
 /**
- * プレスリリースの内容からX投稿文を生成する
- * フォーマット: タイトル要約 + 概要 + 一言コメント（URL無し）
- * 140文字（全角）以内に収める
+ * プレスリリースからX投稿文を生成する（新商品告知）
  */
 export async function generatePost(pr: PressRelease): Promise<string> {
   const message = await anthropic.messages.create({
@@ -26,13 +63,8 @@ export async function generatePost(pr: PressRelease): Promise<string> {
 【文体・トーンの指示】（新商品の場合のみ）
 - 冒頭は必ず「【新商品】」から始める
 - ですます調をベースにしつつ、体言止めやカジュアルなひと言コメントを自然に盛り込む
-- 「これは楽しみ！」「気になる〜」「いよいよ！」のような緩めのひと言を自然に添える
-- 毎回必ず以下のいずれか1つのトーンをランダムに選んで書いてください：
-  - ワクワク系：「これは楽しみ！」「たまりませんね」「好きなやつです」
-  - 驚き系：「これは買うしかない！」「え、こんな組み合わせ？」「ちょっと待って」
-  - 速報系：新商品情報を淡々と伝えつつ、最後に一言期待感を添える
-  - 感想系：「気になる〜」「どんな味なんだろう」「これは試したい」
-  - 行動系：「コンビニ寄らなきゃ」「発売日にチェックします」「見かけたら即買い」
+- 末尾のひと言は以下のリストからランダムに1つだけ選んでください。前後の文章と自然につながるよう調整してOKです。同じ表現が続かないようにしてください：
+${CLOSING_REMARKS}
 - 毎回同じ構成にしない。短文のときも、少し詳しく書くときもある
 
 【内容のルール】
@@ -44,7 +76,7 @@ export async function generatePost(pr: PressRelease): Promise<string> {
 - 絵文字は使わない
 - 全体で280文字（半角換算）以内
 
-【参考例（これを真似るのではなく雰囲気の参考として）】
+【参考例（雰囲気の参考として）】
 【新商品】ロッテから「爽 ブルーベリーヨーグルト味」が4月13日（月）から全国発売です。2色巻き仕様でブルーベリーとプレーンヨーグルトの組み合わせ。194円（税込）。これは楽しみ！
 
 【新商品】森永乳業から「PARM 白桃＆アールグレイ」が4月20日（月）から全国で期間限定発売。アールグレイミルクティーアイスをホワイトチョコでコーティングして中に白桃ソース。180円（税別）。どんな味なんだろう、気になる〜。
@@ -58,18 +90,14 @@ export async function generatePost(pr: PressRelease): Promise<string> {
     ],
   });
 
-  const text =
-    message.content[0].type === "text" ? message.content[0].text : "";
+  const text = message.content[0].type === "text" ? message.content[0].text : "";
   return text.trim();
 }
 
 /**
  * プレスリリースから発売日を抽出する（YYYY-MM-DD形式）
- * 発売日が特定できない場合は null を返す
  */
-export async function extractReleaseDate(
-  pr: PressRelease
-): Promise<string | null> {
+export async function extractReleaseDate(pr: PressRelease): Promise<string | null> {
   try {
     const message = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
@@ -92,13 +120,8 @@ export async function extractReleaseDate(
       ],
     });
 
-    const result =
-      message.content[0].type === "text" ? message.content[0].text.trim() : "";
-
-    // YYYY-MM-DD形式の日付かチェック
-    if (/^\d{4}-\d{2}-\d{2}$/.test(result)) {
-      return result;
-    }
+    const result = message.content[0].type === "text" ? message.content[0].text.trim() : "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(result)) return result;
     return null;
   } catch (error) {
     console.error("発売日抽出エラー:", error);
@@ -107,31 +130,47 @@ export async function extractReleaseDate(
 }
 
 /**
- * リマインド投稿文を生成する（発売日前日の20時に投稿）
+ * リマインド投稿文を生成する
+ * reminderType に応じてトーンを変える
  */
 export async function generateReminderPost(
-  pr: PressRelease
+  pr: PressRelease,
+  reminderType: ReminderType = "day_before"
 ): Promise<string> {
+  const isWeekBefore = reminderType === "week_before";
+  const isThreeDays = reminderType === "three_days_before";
+  const isDayBefore = reminderType === "day_before";
+
+  const timing = isWeekBefore
+    ? "1週間後"
+    : isThreeDays
+    ? "3日後"
+    : "明日";
+
+  const urgency = isDayBefore
+    ? "明日発売です！忘れずに。"
+    : isThreeDays
+    ? "発売まであと3日です。"
+    : "発売まであと1週間です。";
+
   const message = await anthropic.messages.create({
     model: "claude-haiku-4-5-20251001",
     max_tokens: 300,
     messages: [
       {
         role: "user",
-        content: `あなたはアイスクリーム評論家「アイスマン福留」（@icemania）です。以下の商品が「明日発売」であることをXで投稿してください。
+        content: `あなたはアイスクリーム評論家「アイスマン福留」（@icemania）です。以下の商品が「${timing}発売」であることをXで投稿してください。
 
 【文体・トーンの指示】
 - 冒頭は必ず「【リマインド】」から始める
-- ですます調をベースにしつつ、体言止めや「いよいよ！」「忘れずに！」「楽しみ！」などのカジュアルなひと言を自然に混ぜる
-- 毎回必ず以下のいずれか1つのトーンをランダムに選んで書いてください：
-  - 期待系：「いよいよ明日ですね！」「ついに明日です」「楽しみすぎる一本」
-  - 急かし系：「明日発売、お忘れなく！」「コンビニ寄るのを忘れずに」「明日ぜひチェックを」
-  - 実況系：明日の発売を淡々と伝えつつ、最後に一言アイスマン福留らしい感想を添える
-  - 感情系：「明日が待ち遠しいですね」「気になって仕方ない」
+- ですます調をベースに、体言止めやカジュアルなひと言を自然に混ぜる
+- ${urgency}というニュアンスを自然に盛り込む
+- 末尾のひと言は以下のリストからランダムに1つだけ選んでください。前後の文章と自然につながるよう調整してOKです：
+${CLOSING_REMARKS}
 - 毎回同じ構成にしない
 
 【内容のルール】
-- 商品名・メーカー名・発売日（明日）・販売エリア・価格などの具体情報はプレスリリースにある範囲で正確に
+- 商品名・メーカー名・発売日・販売エリア・価格などはプレスリリースにある範囲で正確に
 - 数量限定の場合はさりげなく強調する
 - プレスリリースに記載がない情報は絶対に捏造しない
 - URLは絶対に含めない
@@ -139,7 +178,7 @@ export async function generateReminderPost(
 - 絵文字は使わない
 - 全体で280文字（半角換算）以内
 
-【参考例（これを真似るのではなく雰囲気の参考として）】
+【参考例（雰囲気の参考として）】
 【リマインド】森永乳業「ピノ ストロベリーチーズケーキ」がいよいよ明日発売です。全国のコンビニで数量限定。買えるうちに手に入れてください。楽しみ！
 
 【リマインド】赤城乳業「トッピンぎゅ～！」明日全国発売です。カラースプレー・チョコソース・ホイップ全部乗せの鬼トッピング仕様。数量限定なのでお早めに。見かけたら即買い推奨です。
@@ -153,20 +192,57 @@ export async function generateReminderPost(
     ],
   });
 
-  const text =
-    message.content[0].type === "text" ? message.content[0].text : "";
+  const text = message.content[0].type === "text" ? message.content[0].text : "";
+  return text.trim();
+}
+
+/**
+ * 発売当日の投稿文を生成する（【本日発売！】）
+ */
+export async function generateReleaseDayPost(pr: PressRelease): Promise<string> {
+  const message = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 300,
+    messages: [
+      {
+        role: "user",
+        content: `あなたはアイスクリーム評論家「アイスマン福留」（@icemania）です。以下の商品が「本日発売」であることをXで投稿してください。
+
+【文体・トーンの指示】
+- 冒頭は必ず「【本日発売！】」から始める
+- ですます調をベースに、発売当日の高揚感を自然に表現する
+- 「ついに発売！」「今日から買えます」「売り場でお見かけしたら」などのフレーズを自然に使う
+- 末尾のひと言は以下のリストからランダムに1つだけ選んでください：
+${CLOSING_REMARKS}
+- 毎回同じ構成にしない
+
+【内容のルール】
+- 商品名・メーカー名・販売エリア・価格などはプレスリリースにある範囲で正確に
+- プレスリリースに記載がない情報は絶対に捏造しない
+- URLは絶対に含めない
+- ハッシュタグ不要
+- 絵文字は使わない
+- 全体で280文字（半角換算）以内
+
+【プレスリリース】
+タイトル: ${pr.title}
+内容: ${pr.description}
+
+投稿文のみを出力してください。余計な説明や前置きは不要です。`,
+      },
+    ],
+  });
+
+  const text = message.content[0].type === "text" ? message.content[0].text : "";
   return text.trim();
 }
 
 /**
  * CVSコンビニ商品の投稿文を生成する
- * アイスマン福留の自然なトーンで、BOTっぽさを完全排除
  */
 const CVS_STORE_NAMES = ["ファミリーマート", "セブン-イレブン", "ローソン", "ミニストップ"];
 
-export async function generateCvsPost(
-  product: CvsProductData
-): Promise<string> {
+export async function generateCvsPost(product: CvsProductData): Promise<string> {
   const isCvs = CVS_STORE_NAMES.includes(product.store);
   const prefix = isCvs ? "【コンビニ】" : "【新商品】";
   const storeLabel = isCvs ? `コンビニ名（${product.store}）は必ず記載` : `メーカー名（${product.store}）は必ず記載`;
@@ -195,23 +271,17 @@ export async function generateCvsPost(
 【文体・トーンの指示】
 - 冒頭は必ず「${prefix}」から始める
 - ですます調をベースにしつつ、体言止めやカジュアルなひと言を自然に混ぜる
-- 毎回必ず以下のいずれか1つのトーンをランダムに選んで書いてください：
-  - ワクワク系：「これは楽しみ！」「たまりませんね」「好きなやつです」
-  - 発見系：「見つけました」「情報入りました」「チェックしました」
-  - 速報系：新商品情報を淡々と伝えつつ、最後に一言期待感を添える
-  - 感想系：「気になる〜」「どんな味なんだろう」「これは試したい」
-  - 行動系：「発売日にチェックします」「見かけたら即買い」「チェック推奨」
+- 末尾のひと言は以下のリストからランダムに1つだけ選んでください。同じ表現が続かないようにしてください：
+${CLOSING_REMARKS}
 - 毎回同じ構成にしない。短文のときも、少し詳しく書くときもある
 
 【内容のルール - 正確性最優先】
 - ${storeLabel}
 - 商品名は正確に記載
-- 発売日は必ず含める（最重要情報）。表記ルール：年は省略し「4月8日発売」のように書く。ゼロ埋めしない（04月→4月、08日→8日）。「順次発売」「以降発売」などの補足があればそのまま含める
+- 発売日は必ず含める（最重要情報）。表記ルール：年は省略し「4月8日発売」のように書く。ゼロ埋めしない（04月→4月、08日→8日）
 - 価格・メーカー名があれば含める。不明なら省略（推測しない）
 - 販売エリアが「全国」以外なら記載する。不明なら省略
-- 提供された情報にないことは絶対に書かない。味の感想や食感の推測も禁止
-- 「〜かも」「〜っぽい」などの憶測表現は禁止
-- 簡潔でも正確な情報だけを発信する
+- 提供された情報にないことは絶対に書かない
 - URLは絶対に含めない
 - ハッシュタグ不要
 - 絵文字は使わない
@@ -234,7 +304,6 @@ ${isCvs ? "コンビニ" : "メーカー"}: ${product.store}
     ],
   });
 
-  const postText =
-    message.content[0].type === "text" ? message.content[0].text : "";
+  const postText = message.content[0].type === "text" ? message.content[0].text : "";
   return postText.trim();
 }

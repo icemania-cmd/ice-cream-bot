@@ -77,7 +77,7 @@ export type ReminderType = "week_before" | "three_days_before" | "day_before" | 
 export interface ReminderData {
   title: string;
   description: string;
-  link: string;
+  link?: string;
   imageUrl?: string;
   guid: string;
   releaseDate: string;      // 発売日 YYYY-MM-DD
@@ -85,8 +85,9 @@ export interface ReminderData {
   scheduledDate: string;    // 投稿予定日 YYYY-MM-DD
   scheduledHour: number;    // JST: 7 / 12 / 20
   scheduledMinute: number;  // 0-59 ランダム
-  // 旧形式との互換用（読み込み時のみ）
-  chosenHour?: number;
+  chosenHour?: number;      // 旧形式との互換用（読み込み時のみ）
+  type?: "prtimes" | "cvs"; // リマインド種別（CVS対応）
+  store?: string;            // CVSリマインド用: コンビニ名
 }
 
 /**
@@ -298,6 +299,29 @@ export interface CvsProductData {
 export async function isCvsProductKnown(productId: string): Promise<boolean> {
   const exists = await redis.exists(`${CVS_PRODUCT_PREFIX}${productId}`);
   return exists === 1;
+}
+
+export async function isDuplicateWithCvs(articleTitle: string): Promise<boolean> {
+  const postedKeys = await redis.keys(`${CVS_POSTED_PREFIX}*`);
+  for (const key of postedKeys) {
+    const productId = key.slice(CVS_POSTED_PREFIX.length);
+    const productData = await redis.get<string>(`${CVS_PRODUCT_PREFIX}${productId}`);
+    if (!productData) continue;
+    try {
+      const product = (typeof productData === "string" ? JSON.parse(productData) : productData) as CvsProductData;
+      if (product.name && product.name.length >= 4 && articleTitle.includes(product.name)) return true;
+    } catch { continue; }
+  }
+  const queueKeys = await redis.keys(`${CVS_QUEUE_PREFIX}*`);
+  for (const key of queueKeys) {
+    const productData = await redis.get<string>(key);
+    if (!productData) continue;
+    try {
+      const product = (typeof productData === "string" ? JSON.parse(productData) : productData) as CvsProductData;
+      if (product.name && product.name.length >= 4 && articleTitle.includes(product.name)) return true;
+    } catch { continue; }
+  }
+  return false;
 }
 
 export async function isDuplicateWithPrTimes(productName: string): Promise<boolean> {

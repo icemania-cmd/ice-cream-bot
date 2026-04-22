@@ -12,6 +12,7 @@ import {
   canPostToday,
   recordPostTime,
   incrementDailyCount,
+  isDuplicateWithCvs,
 } from "@/lib/store";
 
 export const maxDuration = 300;
@@ -76,6 +77,14 @@ export async function GET(request: NextRequest) {
     // 発売日フィルタ: 過去・発売日不明を除外
     const eligible: { article: PressRelease; releaseDate: string; days: number }[] = [];
     for (const { article, releaseDate } of enriched) {
+      // CVS投稿済み重複チェック（安価・Claude API不要）
+      const cvsDup = await isDuplicateWithCvs(article.title);
+      if (cvsDup) {
+        console.log(`⏭️ CVS投稿済みのためスキップ: ${article.title}`);
+        await markAsPosted(article.guid);
+        continue;
+      }
+
       const pubDateAge = Date.now() - new Date(article.pubDate).getTime();
       if (pubDateAge > 30 * 24 * 60 * 60 * 1000) {
         console.log(`⏭️ 記事が古すぎるためスキップ: ${article.title}`);

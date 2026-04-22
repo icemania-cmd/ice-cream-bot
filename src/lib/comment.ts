@@ -197,6 +197,54 @@ ${CLOSING_REMARKS}
 }
 
 /**
+ * CVSコンビニ商品の「明日発売」リマインド投稿文を生成する
+ */
+export async function generateCvsReminderPost(product: {
+  name: string;
+  store: string;
+  description?: string;
+  price?: string;
+  region?: string;
+  releaseDate?: string;
+}): Promise<string> {
+  const message = await anthropic.messages.create({
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 300,
+    messages: [
+      {
+        role: "user",
+        content: `あなたはアイスクリーム評論家「アイスマン福留」（@icemania）です。以下のコンビニ商品が「明日発売」であることをXで投稿してください。
+
+【文体・トーンの指示】
+- 冒頭は必ず「【コンビニ】」から始める
+- ですます調をベースにしつつ、「いよいよ！」「忘れずに！」「楽しみ！」などのカジュアルなひと言を自然に混ぜる
+
+【内容のルール】
+- コンビニ名・商品名・「明日発売」を必ず記載
+- 価格・販売エリアがあれば含める。不明なら省略
+- 提供された情報以外のことは書かない
+- URLは絶対に含めない
+- ハッシュタグ不要
+- 絵文字は使わない
+- 全体で280文字（半角換算）以内
+
+【商品情報】
+コンビニ: ${product.store}
+商品名: ${product.name}
+価格: ${product.price || "不明"}
+販売エリア: ${product.region || "全国"}
+商品説明: ${product.description || "なし"}
+
+投稿文のみを出力してください。`,
+      },
+    ],
+  });
+
+  const text = message.content[0].type === "text" ? message.content[0].text : "";
+  return text.trim();
+}
+
+/**
  * 発売当日の投稿文を生成する（【本日発売！】）
  */
 export async function generateReleaseDayPost(pr: PressRelease): Promise<string> {

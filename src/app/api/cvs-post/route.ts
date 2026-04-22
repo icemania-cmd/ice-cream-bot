@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateCvsPost } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
-import { getCvsProductsToPost, markCvsProductPosted } from "@/lib/store";
+import { getCvsProductsToPost, markCvsProductPosted, saveReminder, isDuplicateWithPrTimes } from "@/lib/store";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -122,6 +122,15 @@ export async function GET(request: NextRequest) {
       try {
         console.log(`投稿処理開始: ${product.store} - ${product.name}`);
 
+        // PR TIMES重複チェック（スキャン後にPR TIMESが投稿した場合の漏れを防ぐ）
+        const prDup = await isDuplicateWithPrTimes(product.name);
+        if (prDup) {
+          console.log(`⏭️ PR TIMES投稿済みのためスキップ: ${product.name}`);
+          await markCvsProductPosted(product.productId);
+          results.push({ name: product.name, store: product.store, status: "skipped", reason: "prtimes_duplicate" });
+          continue;
+        }
+
         // 竹下製菓は販売エリアが不明な場合は投稿しない
         if (product.store === "竹下製菓") {
           const region = product.region?.trim() ?? "";
@@ -188,6 +197,35 @@ export async function GET(request: NextRequest) {
 
         if (result.success) {
           await markCvsProductPosted(product.productId);
+
+          // 発売日が「明後日以降」の場合はリマインド予約を保存（翌日発売は本投稿が前日告知を兼ねる）
+          try {
+            const tomorrowJst = new Date(nowJst);
+            tomorrowJst.setDate(tomorrowJst.getDate() + 1);
+            const tomorrowStr = tomorrowJst.toISOString().split("T")[0];
+            if (parsedDate > tomorrowStr) {
+              const REMINDER_HOURS = [7, 12, 20] as const;
+              const chosenHour = REMINDER_HOURS[Math.floor(Math.random() * REMINDER_HOURS.length)];
+              const minute = Math.floor(Math.random() * 60);
+              await saveReminder({
+                title: product.name,
+                description: product.description || "",
+                guid: `cvs_reminder:${product.productId}`,
+                imageUrl: product.imageUrl,
+                releaseDate: parsedDate,
+                reminderType: "day_before",
+                scheduledDate: new Date(new Date(parsedDate + "T00:00:00+09:00").getTime() - 86400000).toISOString().split("T")[0],
+                scheduledHour: chosenHour,
+                scheduledMinute: minute,
+                type: "cvs",
+                store: product.store,
+              });
+              console.log(`📅 CVSリマインド予約: ${parsedDate} ${chosenHour}時 - ${product.name}`);
+            }
+          } catch (reminderError) {
+            console.error("CVSリマインド予約エラー:", reminderError);
+          }
+
           results.push({
             name: product.name,
             store: product.store,

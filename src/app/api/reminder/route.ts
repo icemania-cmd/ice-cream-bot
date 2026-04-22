@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateReminderPost, generateReleaseDayPost } from "@/lib/comment";
+import { generateReminderPost, generateReleaseDayPost, generateCvsReminderPost } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
 import {
   getRemindersForTimeSlot,
@@ -69,15 +69,23 @@ export async function GET(request: NextRequest) {
         const pr: PressRelease = {
           title: reminder.title,
           description: reminder.description,
-          link: reminder.link,
+          link: reminder.link ?? "",
           pubDate: "",
           guid: reminder.guid,
           imageUrl: reminder.imageUrl,
         };
 
-        // reminderType に応じて投稿文を生成
+        // reminderType・type に応じて投稿文を生成
         let postText: string;
-        if (reminderType === "release_day") {
+        if (reminder.type === "cvs") {
+          postText = await generateCvsReminderPost({
+            name: reminder.title,
+            store: reminder.store || "",
+            description: reminder.description,
+            releaseDate: reminder.releaseDate,
+          });
+          if (!postText.startsWith("【コンビニ】")) postText = "【コンビニ】" + postText;
+        } else if (reminderType === "release_day") {
           postText = await generateReleaseDayPost(pr);
           if (!postText.startsWith("【本日発売！】")) postText = "【本日発売！】" + postText;
         } else {

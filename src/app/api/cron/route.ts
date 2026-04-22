@@ -5,8 +5,9 @@ import { postTweet, uploadImageToX } from "@/lib/x-client";
 import { isAlreadyPosted, markAsPosted, saveReminder, isDuplicateWithCvs } from "@/lib/store";
 
 // 1回のCron実行で投稿する最大件数
-// Xアルゴリズム対策: 33分おきにcronを実行し、1件ずつ投稿する
 const MAX_POSTS_PER_RUN = 1;
+// タイムアウト防止: Claude APIを呼ぶ記事の上限（extractReleaseDate + generatePost で ~5s/記事）
+const MAX_CLAUDE_CALLS_PER_RUN = 8;
 
 export async function GET(request: NextRequest) {
   // Vercel Cronからの呼び出しを認証
@@ -42,13 +43,23 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 3. 最大件数まで投稿
+    // 3. 新着記事を順番にスキャンし、投稿できるものを探す
+    // ※ 1記事しか試さない旧設計を修正：スキップされても次の記事へ進む
     const results = [];
-    const toPost = newArticles.slice(0, MAX_POSTS_PER_RUN);
+    let postedCount = 0;
+    let claudeCallCount = 0;
+    const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const today = jstNow.toISOString().split("T")[0];
 
-    for (const article of toPost) {
+    for (const article of newArticles) {
+      if (postedCount >= MAX_POSTS_PER_RUN) break;
+      if (claudeCallCount >= MAX_CLAUDE_CALLS_PER_RUN) {
+        console.log(`⚠️ Claude API呼び出し上限(${MAX_CLAUDE_CALLS_PER_RUN})に達したため残り記事をスキップ`);
+        break;
+      }
+
       try {
-        // ① CVS投稿済み重複チェック（Claude API呼び出しの前に実行）
+        // ① CVS投稿済み重複チェック（安価・Claude API不要）
         const cvsDup = await isDuplicateWithCvs(article.title);
         if (cvsDup) {
           console.log(`⏭️ CVS投稿済みのためスキップ: ${article.title}`);
@@ -57,7 +68,7 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
-        // ② pubDate が30日以上前の記事はスキップ
+        // ② pubDate が30日以上前の記事はスキップ（安価）
         const pubDateAge = Date.now() - new Date(article.pubDate).getTime();
         if (pubDateAge > 30 * 24 * 60 * 60 * 1000) {
           console.log(`⏭️ 記事が古すぎるためスキップ (${article.pubDate}): ${article.title}`);
@@ -66,10 +77,9 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
-        // ③ 発売日チェック（null=不明→skip、当日以降→skip、前日までのみ投稿OK）
+        // ③ 発売日チェック（Claude API — ここからカウント）
+        claudeCallCount++;
         const releaseDate = await extractReleaseDate(article);
-        const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
-        const today = jstNow.toISOString().split("T")[0];
 
         if (!releaseDate) {
           console.log(`⏭️ 発売日不明スキップ: ${article.title}`);
@@ -85,6 +95,7 @@ export async function GET(request: NextRequest) {
         }
 
         // ④ Claude APIで投稿文を生成
+        claudeCallCount++;
         const postText = await generatePost(article);
         console.log(`生成された投稿文:\n${postText}\n`);
 
@@ -144,6 +155,7 @@ export async function GET(request: NextRequest) {
             console.error("リマインド予約エラー:", reminderError);
           }
 
+          postedCount++;
           results.push({
             title: article.title,
             tweetId: result.tweetId,
@@ -170,7 +182,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      message: `${results.filter((r) => r.status === "success").length}/${toPost.length}件投稿完了`,
+      message: `${postedCount}件投稿完了 (${results.length}件スキャン)`,
       results,
     });
   } catch (error) {

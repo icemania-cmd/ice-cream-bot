@@ -40,6 +40,8 @@ function extractImageFromContent(content: string): string | undefined {
   return undefined;
 }
 
+const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
 /**
  * プレスリリースページからog:image を取得するフォールバック
  * 投稿直前に個別呼び出しする用途（全件一括取得はタイムアウトの原因になる）
@@ -47,7 +49,7 @@ function extractImageFromContent(content: string): string | undefined {
 export async function fetchOgImage(url: string): Promise<string | undefined> {
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "IceCreamBot/1.0" },
+      headers: { "User-Agent": BROWSER_UA },
     });
     const html = await res.text();
     // og:image メタタグからURLを抽出
@@ -100,13 +102,13 @@ const KEYWORDS = [
 ];
 
 export async function fetchIceCreamNews(): Promise<PressRelease[]> {
-  // User-Agentを設定（ブロック対策）
+  // User-Agentをブラウザ互換に設定（Cloudflare WAF対策）
   const parser = new Parser({
     headers: {
-      "User-Agent": "IceCreamBot/1.0 (RSS Reader)",
+      "User-Agent": BROWSER_UA,
       Accept: "application/rss+xml, application/xml, text/xml, */*",
     },
-    timeout: 10000,
+    timeout: 15000,
   });
 
   const allItems: PressRelease[] = [];
@@ -156,7 +158,7 @@ export async function fetchIceCreamNews(): Promise<PressRelease[]> {
         console.log(`フォールバック: fetchで直接取得`);
         const res = await fetch(url, {
           headers: {
-            "User-Agent": "IceCreamBot/1.0 (RSS Reader)",
+            "User-Agent": BROWSER_UA,
             Accept: "application/rss+xml, application/xml, text/xml, */*",
           },
         });

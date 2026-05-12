@@ -2,35 +2,5 @@
   "functions": {
     "src/app/api/cvs-scan/route.ts": { "maxDuration": 300 },
     "src/app/api/cron/route.ts": { "maxDuration": 300 }
-  },
-  "crons": [
-    {
-      "path": "/api/cron",
-      "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/reminder",
-      "schedule": "*/10 22 * * *"
-    },
-    {
-      "path": "/api/reminder",
-      "schedule": "*/10 3 * * *"
-    },
-    {
-      "path": "/api/reminder",
-      "schedule": "*/10 11 * * *"
-    },
-    {
-      "path": "/api/cvs-scan",
-      "schedule": "0 */2 * * *"
-    },
-    {
-      "path": "/api/cvs-post",
-      "schedule": "*/30 3-4 * * *"
-    },
-    {
-      "path": "/api/cvs-post",
-      "schedule": "*/30 9-10 * * *"
-    }
-  ]
+  }
 }

@@ -1,26 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchIceCreamNews, fetchOgImage, type PressRelease } from "@/lib/rss";
 import { generatePost, generateReminderPost, generateReleaseDayPost, extractReleaseDate } from "@/lib/comment";
-import { postTweet, uploadImageToX } from "@/lib/x-client";
 import {
   isAlreadyPosted,
   markAsPosted,
-  scheduleReminders,
   getCachedReleaseDate,
   setCachedReleaseDate,
-  canPostNow,
-  canPostToday,
-  recordPostTime,
-  incrementDailyCount,
   isDuplicateWithCvs,
 } from "@/lib/store";
+import {
+  saveDraft,
+  hasDraft,
+  isRejected,
+  factCheckDraft,
+  type DraftPostType,
+} from "@/lib/drafts";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
 
-const MAX_POSTS_PER_RUN = 3;
+/**
+ * 承認制モード:
+ * この cron は X への投稿を一切行わない。
+ * PR TIMES をスキャンし、投稿文の「下書き」を生成して Redis に保存するだけ。
+ * 実際の投稿は /admin で人間が承認したときにのみ行われる。
+ */
 
-type Enriched = { article: PressRelease; releaseDate: string | null };
+const MAX_DRAFTS_PER_RUN = 5;
 
 /** 発売日文字列(YYYY-MM-DD)と今日のJST日付から残り日数を計算する */
 function daysUntilRelease(releaseDate: string, todayStr: string): number {
@@ -36,17 +42,20 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    console.log("🍦 Cron開始: PR Times スキャン");
+    console.log("🍦 Cron開始: PR Times スキャン（下書き生成モード）");
 
     const articles = await fetchIceCreamNews();
     console.log(`取得記事数: ${articles.length}`);
 
-    // 未投稿フィルタ
+    // 未処理フィルタ（投稿済み・下書き作成済み・却下済みを除外）
     const newArticles: PressRelease[] = [];
     for (const article of articles) {
-      if (!(await isAlreadyPosted(article.guid))) newArticles.push(article);
+      if (await isAlreadyPosted(article.guid)) continue;
+      if (await hasDraft(article.guid)) continue;
+      if (await isRejected(article.guid)) continue;
+      newArticles.push(article);
     }
-    console.log(`未投稿記事数: ${newArticles.length}`);
+    console.log(`未処理記事数: ${newArticles.length}`);
 
     if (newArticles.length === 0) {
       return NextResponse.json({
@@ -59,7 +68,7 @@ export async function GET(request: NextRequest) {
     }
 
     // 発売日を並列抽出（キャッシュ優先）
-    const enriched: Enriched[] = await Promise.all(
+    const enriched = await Promise.all(
       newArticles.map(async (article) => {
         let releaseDate = await getCachedReleaseDate(article.guid);
         if (releaseDate === undefined) {
@@ -112,41 +121,26 @@ export async function GET(request: NextRequest) {
 
     // 発売日が近い順にソート
     eligible.sort((a, b) => a.days - b.days);
-    const toProcess = eligible.slice(0, MAX_POSTS_PER_RUN);
+    const toProcess = eligible.slice(0, MAX_DRAFTS_PER_RUN);
 
-    console.log(`処理予定: ${toProcess.length}件`);
+    console.log(`下書き生成予定: ${toProcess.length}件`);
 
     const results: Array<Record<string, unknown>> = [];
 
     for (const { article, releaseDate, days } of toProcess) {
       try {
-        // レート制限チェック
-        if (!(await canPostToday())) {
-          console.log(`⛔ 本日の投稿上限(20件)に達したため停止`);
-          results.push({ title: article.title, status: "skipped_daily_limit" });
-          continue;
-        }
-        if (!(await canPostNow())) {
-          console.log(`⏳ 15分ギャップ未達のためスキップ: ${article.title}`);
-          results.push({ title: article.title, status: "skipped_gap" });
-          continue;
-        }
-
         let postText: string;
-        let postType: string;
+        let postType: DraftPostType;
 
         if (days === 0) {
-          // 発売当日: 【本日発売！】
           postType = "release_day";
           postText = await generateReleaseDayPost(article);
           if (!postText.startsWith("【本日発売！】")) postText = "【本日発売！】" + postText;
         } else if (days === 1) {
-          // 翌日発売: 【リマインド】のみ（新商品投稿なし）
           postType = "day_before_reminder";
           postText = await generateReminderPost(article, "day_before");
           if (!postText.startsWith("【リマインド】")) postText = "【リマインド】" + postText;
         } else {
-          // 2日以上先: 【新商品】
           postType = "new_product";
           postText = await generatePost(article);
           if (postText.trim() === "SKIP") {
@@ -158,54 +152,37 @@ export async function GET(request: NextRequest) {
           if (!postText.startsWith("【新商品】")) postText = "【新商品】" + postText;
         }
 
-        console.log(`投稿文[${postType}]:\n${postText}\n`);
-
-        // og:image 取得（未取得の場合のみ）
+        // og:image 取得（未取得の場合のみ、プレビュー用に下書きへ保存）
         if (!article.imageUrl && article.link) {
           article.imageUrl = await fetchOgImage(article.link);
         }
 
-        // 画像アップロード
-        let mediaIds: string[] | undefined;
-        if (article.imageUrl) {
-          const mediaId = await uploadImageToX(article.imageUrl);
-          if (mediaId) {
-            mediaIds = [mediaId];
-            console.log(`画像アップロード成功: ${mediaId}`);
-          }
-        }
+        // 事実チェック: 生成文をソース本文と照合
+        const sourceText = `${article.title}\n${article.description}`;
+        const warnings = factCheckDraft({ text: postText, sourceText, releaseDate });
 
-        // 投稿
-        const result = await postTweet(postText, mediaIds);
-        if (result.success) {
-          await recordPostTime();
-          await incrementDailyCount();
-          await markAsPosted(article.guid, article.title, article.imageUrl);
+        await saveDraft({
+          guid: article.guid,
+          title: article.title,
+          sourceText,
+          link: article.link,
+          imageUrl: article.imageUrl,
+          releaseDate,
+          postType,
+          text: postText,
+          warnings,
+          createdAt: new Date().toISOString(),
+        });
 
-          // リマインド予約（翌日発売はrelease_dayのみ、それ以外は発売日に応じてスケジュール）
-          try {
-            if (days === 1) {
-              // 翌日発売 → release_day のみ予約
-              await scheduleReminders(
-                { title: article.title, description: article.description, link: article.link, imageUrl: article.imageUrl, guid: article.guid, releaseDate },
-                1
-              );
-            } else if (days >= 2) {
-              await scheduleReminders(
-                { title: article.title, description: article.description, link: article.link, imageUrl: article.imageUrl, guid: article.guid, releaseDate },
-                days
-              );
-            }
-          } catch (reminderError) {
-            console.error("リマインド予約エラー:", reminderError);
-          }
-
-          results.push({ title: article.title, tweetId: result.tweetId, releaseDate, postType, days, status: "success" });
-          console.log(`✅ 投稿成功[${postType}]: ${article.title}`);
-        } else {
-          results.push({ title: article.title, error: result.error, status: "failed" });
-          console.error(`❌ 投稿失敗: ${result.error}`);
-        }
+        results.push({
+          title: article.title,
+          releaseDate,
+          postType,
+          days,
+          warnings: warnings.length,
+          status: "draft_created",
+        });
+        console.log(`✅ 下書き作成[${postType}] 警告${warnings.length}件: ${article.title}`);
       } catch (error) {
         console.error(`エラー: ${article.title}`, error);
         results.push({ title: article.title, error: error instanceof Error ? error.message : "不明なエラー", status: "error" });
@@ -213,7 +190,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      message: `${results.filter(r => r.status === "success").length}/${toProcess.length}件投稿完了`,
+      message: `${results.filter(r => r.status === "draft_created").length}/${toProcess.length}件の下書きを作成（承認待ち）`,
       results,
     });
   } catch (error) {

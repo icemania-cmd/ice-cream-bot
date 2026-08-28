@@ -17,10 +17,18 @@ import {
  * ここでは ZSET のメンバー判定とパイプラインだけで済ませ、KEYS は一切使わない。
  */
 
-export const redis = new Redis({
-  url: process.env.KV_REST_API_URL || "",
-  token: process.env.KV_REST_API_TOKEN || "",
-});
+/**
+ * Upstash の接続情報。
+ * Vercel の Marketplace 連携は、作成時期によって KV_REST_API_* と
+ * UPSTASH_REDIS_REST_* のどちらの名前で環境変数を注入するかが異なる。
+ * 片方しか見ていないと「繋がらない理由が分からない」事故になるので両方受ける。
+ */
+export const redisUrl =
+  process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "";
+export const redisToken =
+  process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
+
+export const redis = new Redis({ url: redisUrl, token: redisToken });
 
 const K = {
   posted: "v2:posted",
@@ -364,12 +372,26 @@ export async function pruneOldEntries(): Promise<void> {
 }
 
 export async function storeHealth(): Promise<{ ok: boolean; error?: string }> {
+  if (!redisUrl || !redisToken) {
+    return {
+      ok: false,
+      error:
+        "接続情報が未設定です（KV_REST_API_URL / KV_REST_API_TOKEN もしくは UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN）",
+    };
+  }
   try {
     await redis.set("v2:health", Date.now().toString(), { ex: 120 });
     const v = await redis.get("v2:health");
     return { ok: v != null };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    const msg = e instanceof Error ? e.message : String(e);
+    const host = redisUrl.replace(/^https?:\/\//, "").split("/")[0];
+    return {
+      ok: false,
+      error: /ENOTFOUND|fetch failed/i.test(msg)
+        ? `${host} に接続できません。Upstash のデータベースが削除・休止されている可能性があります（${msg}）`
+        : msg,
+    };
   }
 }
 

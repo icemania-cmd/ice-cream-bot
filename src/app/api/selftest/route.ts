@@ -8,7 +8,7 @@ import {
   uploadMedia,
   verifyCredentials,
 } from "@/lib/x";
-import { queueSize, storeHealth } from "@/lib/store";
+import { queueSize, redisToken, redisUrl, storeHealth } from "@/lib/store";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -39,20 +39,22 @@ export async function GET(request: NextRequest) {
   const requiredEnv = [
     "ANTHROPIC_API_KEY",
     "CRON_SECRET",
-    "KV_REST_API_URL",
-    "KV_REST_API_TOKEN",
     "X_API_KEY",
     "X_API_SECRET",
     "X_ACCESS_TOKEN",
     "X_ACCESS_TOKEN_SECRET",
   ];
   const missingEnv = requiredEnv.filter((k) => !process.env[k]);
+  // Redis は連携の作成時期で変数名が2通りある
+  if (!redisUrl || !redisToken) {
+    missingEnv.push("KV_REST_API_URL/TOKEN（または UPSTASH_REDIS_REST_URL/TOKEN）");
+  }
   checks.push({
     name: "環境変数",
     ok: missingEnv.length === 0,
     detail:
       missingEnv.length === 0
-        ? `${requiredEnv.length}件すべて設定済み`
+        ? `${requiredEnv.length + 2}件すべて設定済み`
         : `未設定: ${missingEnv.join(", ")}`,
   });
   checks.push({
@@ -68,7 +70,9 @@ export async function GET(request: NextRequest) {
   checks.push({
     name: "Upstash Redis",
     ok: store.ok,
-    detail: store.ok ? "読み書き成功" : `失敗: ${store.error}`,
+    detail: store.ok
+      ? `読み書き成功（${redisUrl.replace(/^https?:\/\//, "").split("/")[0]}）`
+      : `失敗: ${store.error}`,
   });
 
   // 3. PR TIMES

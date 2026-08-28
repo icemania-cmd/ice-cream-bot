@@ -15,6 +15,24 @@ const MEDIA_V1_URL = "https://upload.twitter.com/1.1/media/upload.json";
 
 /** X が画像1枚に許す上限 */
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** X への各リクエストの上限。応答が止まった相手に実行時間を食われないようにする。 */
+const X_TIMEOUT_MS = 25000;
+
+/** 応答本文の読み出しまでタイムアウトの内側で行う fetch */
+async function xFetch(
+  url: string,
+  init: RequestInit
+): Promise<{ ok: boolean; status: number; text: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), X_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const text = await res.text();
+    return { ok: res.ok, status: res.status, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 interface Credentials {
@@ -212,7 +230,7 @@ async function uploadV2(
   const { body, contentType } = buildMultipart(image, {
     media_category: "tweet_image",
   });
-  const res = await fetch(MEDIA_V2_URL, {
+  const res = await xFetch(MEDIA_V2_URL, {
     method: "POST",
     headers: {
       Authorization: buildAuthHeader("POST", MEDIA_V2_URL, credentials),
@@ -220,22 +238,19 @@ async function uploadV2(
     },
     body: new Uint8Array(body),
   });
-  const textBody = await res.text();
   let json: Record<string, unknown> = {};
   try {
-    json = JSON.parse(textBody);
+    json = JSON.parse(res.text);
   } catch {
     /* HTML エラーページが返ることがある */
   }
   if (!res.ok) {
-    return { error: `v2 ${res.status}: ${textBody.slice(0, 300)}` };
+    return { error: `v2 ${res.status}: ${res.text.slice(0, 300)}` };
   }
   const data = (json.data as Record<string, unknown>) || json;
-  const mediaId =
-    (data.id as string) ||
-    (data.media_id_string as string) ||
-    (data.media_key as string);
-  if (!mediaId) return { error: `v2 応答に media id なし: ${textBody.slice(0, 300)}` };
+  // media_key（3_123… 形式）は /2/tweets の media_ids には使えないので採らない
+  const mediaId = (data.id as string) || (data.media_id_string as string);
+  if (!mediaId) return { error: `v2 応答に media id なし: ${res.text.slice(0, 300)}` };
   return { mediaId, via: "v2" };
 }
 
@@ -245,7 +260,7 @@ async function uploadV1(
   credentials: Credentials
 ): Promise<MediaUploadResult> {
   const base64 = image.buffer.toString("base64");
-  const res = await fetch(MEDIA_V1_URL, {
+  const res = await xFetch(MEDIA_V1_URL, {
     method: "POST",
     headers: {
       Authorization: buildAuthHeader("POST", MEDIA_V1_URL, credentials, {
@@ -255,17 +270,16 @@ async function uploadV1(
     },
     body: `media_data=${percentEncode(base64)}`,
   });
-  const textBody = await res.text();
-  if (!res.ok) return { error: `v1.1 ${res.status}: ${textBody.slice(0, 300)}` };
+  if (!res.ok) return { error: `v1.1 ${res.status}: ${res.text.slice(0, 300)}` };
   try {
-    const json = JSON.parse(textBody);
+    const json = JSON.parse(res.text);
     if (json.media_id_string) {
       return { mediaId: json.media_id_string as string, via: "v1.1" };
     }
   } catch {
     /* noop */
   }
-  return { error: `v1.1 応答に media id なし: ${textBody.slice(0, 200)}` };
+  return { error: `v1.1 応答に media id なし: ${res.text.slice(0, 200)}` };
 }
 
 export async function uploadMedia(
@@ -294,6 +308,12 @@ export interface PostResult {
   error?: string;
   /** レート制限で弾かれた場合 true（呼び出し側でその日の投稿を止める） */
   rateLimited?: boolean;
+  /**
+   * X が明確に受理しなかったと言い切れる場合のみ true。
+   * ネットワーク断・タイムアウト・5xx は「投稿されたかもしれない」ので false。
+   * ここを取り違えると二重投稿になる。
+   */
+  definitelyNotPosted?: boolean;
 }
 
 export async function postTweet(
@@ -340,12 +360,11 @@ export async function verifyCredentials(): Promise<{
   const credentials = getCredentials();
   const url = "https://api.x.com/2/users/me";
   try {
-    const res = await fetch(url, {
+    const res = await xFetch(url, {
       headers: { Authorization: buildAuthHeader("GET", url, credentials) },
     });
-    const textBody = await res.text();
-    if (!res.ok) return { ok: false, error: `${res.status} ${textBody.slice(0, 200)}` };
-    const json = JSON.parse(textBody);
+    if (!res.ok) return { ok: false, error: `${res.status} ${res.text.slice(0, 200)}` };
+    const json = JSON.parse(res.text);
     return { ok: true, username: json?.data?.username };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

@@ -51,8 +51,11 @@ export async function GET(request: NextRequest) {
   // Vercel cron は x-vercel-cron-schedule で「どのスケジュールが叩いたか」を教えてくれる。
   // 時報側のスケジュールで来たときは企業別フィードも舐める。
   const cronSchedule = request.headers.get("x-vercel-cron-schedule") || "";
+  // ヘッダが来ない環境でも保険が働くよう、実行時刻（毎時21分台）でも判定する
   const deep =
-    url.searchParams.get("deep") === "1" || cronSchedule.startsWith("21 ");
+    url.searchParams.get("deep") === "1" ||
+    cronSchedule.startsWith("21 ") ||
+    new Date().getUTCMinutes() === 21;
 
   const log: RunLog = {
     at: new Date().toISOString(),
@@ -104,8 +107,15 @@ export async function GET(request: NextRequest) {
         log.notes.push("X側のレート制限に到達したため以降の投稿を中止");
         postsThisRun = MAX_POSTS_PER_RUN;
       }
-      // 失敗した記事は ready に残し、次回の実行で再試行する
-      await releaseClaim(item.guid);
+      // 投稿されたかどうか分からない失敗（タイムアウト・5xx）で権利を解放すると
+      // 次回の実行が同じ記事をもう一度投稿しうる。確実に弾かれた場合だけ解放する。
+      if (result.definitelyNotPosted) {
+        await releaseClaim(item.guid);
+      } else {
+        log.notes.push(
+          `投稿結果が不明のため再試行しません（Xを確認してください）: ${item.title}`
+        );
+      }
       details.push({ guid: item.guid, action: "投稿失敗", error: result.error });
       return false;
     }
@@ -133,7 +143,7 @@ export async function GET(request: NextRequest) {
     return true;
   }
 
-  if (!(await acquireRunLock())) {
+  if (!(await acquireRunLock(330))) {
     return NextResponse.json(
       { skipped: true, reason: "前回の実行がまだ走っているためスキップしました" },
       { status: 200 }
@@ -197,10 +207,11 @@ export async function GET(request: NextRequest) {
     // 落としたものは印を付けて二度と処理しない（dry-run では状態を汚さない）
     if (!dryRun && rejectedGuids.length > 0) await markHandled(rejectedGuids);
 
-    // 新しい順に、1回の上限まで
+    // 古い順に処理する。新しい順にすると、候補が上限を超えた日に
+    // 古いものが毎回後回しにされ、フィードから消えて永久に取りこぼされる。
     candidates.sort(
       (a, b) =>
-        new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
+        new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime()
     );
     const toClassify = candidates.slice(0, MAX_CLASSIFY_PER_RUN);
     if (candidates.length > toClassify.length) {
@@ -210,7 +221,15 @@ export async function GET(request: NextRequest) {
     }
 
     // ---- 5. 判定 → 照合 → 振り分け ----
+    // Vercel の上限は300秒。1件あたり記事取得+Claude+画像+投稿で最大30秒程度
+    // かかりうるため、余裕を持って打ち切る。途中で殺されると Claude の課金だけ
+    // 発生して結果が残らないため、これは費用対策でもある。
+    const TIME_BUDGET_MS = 200_000;
     for (const release of toClassify) {
+      if (Date.now() - startedAt > TIME_BUDGET_MS) {
+        log.notes.push("実行時間の予算に達したため、残りは次回に回します");
+        break;
+      }
       try {
         const detail = await fetchReleaseDetail(release.link);
         const bodyText = detail?.bodyText || "";
@@ -298,8 +317,8 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 掃除は毎回やる必要がない。Upstash のコマンド数を抑えるため毎時1回に留める。
-    if (deep && !dryRun) await pruneOldEntries();
+    // ZSET の刈り込みは3コマンドしか使わないので毎回実行して確実に走らせる
+    if (!dryRun) await pruneOldEntries();
   } catch (e) {
     log.errors.push(e instanceof Error ? e.message : String(e));
   } finally {

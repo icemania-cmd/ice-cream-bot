@@ -33,19 +33,24 @@ export interface ReleaseDetail {
 // ===== 低レベルユーティリティ =====
 
 /** AbortController 付き fetch。Vercel 上で1本のリクエストが全体を道連れにしないようにする。 */
-async function fetchWithTimeout(
+async function fetchTextWithTimeout(
   url: string,
   timeoutMs: number,
   accept: string
-): Promise<Response> {
+): Promise<{ ok: boolean; status: number; text: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    const res = await fetch(url, {
       headers: { "User-Agent": BROWSER_UA, Accept: accept },
       signal: controller.signal,
       cache: "no-store",
     });
+    // 本文の読み出しまでタイムアウトの内側で行う。
+    // ヘッダ到着時点で clearTimeout してしまうと、応答が止まった相手に
+    // 無制限に待たされ、Vercel の実行時間を食い潰す。
+    const text = await res.text();
+    return { ok: res.ok, status: res.status, text };
   } finally {
     clearTimeout(timer);
   }
@@ -118,7 +123,10 @@ export function parseFeed(xml: string, source: string): Release[] {
     if (!title || !link) continue;
 
     const summary = tagText(block, "description");
-    const corp = tagText(block, "dc:corp");
+    const corp =
+      tagText(block, "dc:corp") ||
+      tagText(block, "dc:creator") ||
+      tagText(block, "author");
     const publishedAt =
       tagText(block, "dc:date") ||
       tagText(block, "pubDate") ||
@@ -155,14 +163,13 @@ async function fetchFeed(
   timeoutMs: number
 ): Promise<{ items: Release[]; error?: string }> {
   try {
-    const res = await fetchWithTimeout(
+    const res = await fetchTextWithTimeout(
       url,
       timeoutMs,
       "application/rss+xml, application/xml, text/xml, */*"
     );
     if (!res.ok) return { items: [], error: `HTTP ${res.status}` };
-    const xml = await res.text();
-    const items = parseFeed(xml, source);
+    const items = parseFeed(res.text, source);
     if (items.length === 0) {
       return { items: [], error: "0件（フォーマット変更の可能性）" };
     }
@@ -268,9 +275,9 @@ export async function fetchReleaseDetail(
   link: string
 ): Promise<ReleaseDetail | null> {
   try {
-    const res = await fetchWithTimeout(link, 12000, "text/html,*/*");
+    const res = await fetchTextWithTimeout(link, 12000, "text/html,*/*");
     if (!res.ok) return null;
-    const html = await res.text();
+    const html = res.text;
 
     const ogImage = metaContent(html, "og:image");
 

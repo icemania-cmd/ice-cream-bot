@@ -71,6 +71,9 @@ const HANDLED_TTL_SECONDS = TTL_SEEN_DAYS * 86400;
 
 function handledKey(monthsAgo = 0): string {
   const d = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  // 先に1日へ寄せてから月を引く。31日に setUTCMonth(-1) すると
+  // 「4月31日 → 5月1日」に正規化され、先月キーが今月キーと同じになる。
+  d.setUTCDate(1);
   d.setUTCMonth(d.getUTCMonth() - monthsAgo);
   return `v2:handled:${d.toISOString().slice(0, 7)}`;
 }
@@ -129,6 +132,7 @@ export async function markPosted(
   pipe.del(`v2:review:${guid}`);
   pipe.del(`v2:ready:${guid}`);
   pipe.sadd(handledKey(0), guid);
+  pipe.expire(handledKey(0), HANDLED_TTL_SECONDS);
   await pipe.exec();
 }
 
@@ -172,6 +176,7 @@ export async function enqueue(q: QueueName, item: QueuedItem): Promise<void> {
   pipe.zadd(queueKey(q), { score: Date.now(), member: item.guid });
   pipe.set(queueItemKey(q, item.guid), JSON.stringify(item), { ex: ttl });
   pipe.sadd(handledKey(0), item.guid);
+  pipe.expire(handledKey(0), HANDLED_TTL_SECONDS);
   await pipe.exec();
 }
 
@@ -195,11 +200,17 @@ export async function listQueue(
   const raws = await pipe.exec();
 
   const items: QueuedItem[] = [];
+  const stale: string[] = [];
   raws.forEach((raw, i) => {
     const item = parse<QueuedItem>(raw);
     if (item) items.push(item);
-    else void redis.zrem(queueKey(q), guids[i]); // TTL切れの残骸を掃除
+    else stale.push(guids[i]); // TTL切れの残骸
   });
+  if (stale.length > 0) {
+    // await しない Promise を投げっぱなしにすると unhandled rejection で
+    // 関数ごと落ちうる。まとめて1コマンドで掃除し、失敗は握り潰す。
+    await redis.zrem(queueKey(q), ...stale).catch(() => undefined);
+  }
   return items;
 }
 
@@ -385,9 +396,11 @@ export async function releaseRunLock(): Promise<void> {
  * 一度取れたら TTL 中は同じ記事を誰も投稿できない。
  */
 export async function claimForPost(guid: string): Promise<boolean> {
+  // cron 間隔（10分）より十分長くしないと、次の実行が始まる瞬間に
+  // ロックが切れて二重投稿の窓が開く。
   const res = await redis.set(`v2:claim:${guid}`, "1", {
     nx: true,
-    ex: 600,
+    ex: 3600,
   });
   return res === "OK";
 }

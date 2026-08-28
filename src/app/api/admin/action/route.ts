@@ -4,11 +4,13 @@ import { MAX_TWEET_WEIGHT } from "@/lib/config";
 import { tweetWeight } from "@/lib/verify";
 import { postTweet, uploadMedia } from "@/lib/x";
 import {
+  claimForPost,
   dequeue,
   getQueued,
   markPosted,
   recordPost,
   reject,
+  releaseClaim,
   type QueueName,
 } from "@/lib/store";
 
@@ -79,6 +81,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 承認ボタンと cron の /api/scan が同じ記事を同時に掴みうる。
+    // 投稿権を取ってから投稿しないと、人が押した瞬間に二重投稿になる。
+    if (!(await claimForPost(guid))) {
+      return NextResponse.json(
+        {
+          error:
+            "この記事は別の処理が投稿中です。数分おいて一覧を再読み込みしてください。",
+        },
+        { status: 409 }
+      );
+    }
+
     let mediaIds: string[] | undefined;
     let imageNote = "画像なし";
     if (item.imageUrl) {
@@ -93,8 +107,18 @@ export async function POST(request: NextRequest) {
 
     const result = await postTweet(text, mediaIds);
     if (!result.success) {
+      // 投稿された可能性が残る失敗では権利を返さない（再押下での二重投稿を防ぐ）
+      if (result.definitelyNotPosted) {
+        await releaseClaim(guid);
+        return NextResponse.json(
+          { error: `X投稿に失敗しました: ${result.error}` },
+          { status: 502 }
+        );
+      }
       return NextResponse.json(
-        { error: `X投稿に失敗しました: ${result.error}` },
+        {
+          error: `X投稿の結果が確認できませんでした（${result.error}）。Xのタイムラインを確認してください。投稿されていなければ数分後に再度お試しください。`,
+        },
         { status: 502 }
       );
     }

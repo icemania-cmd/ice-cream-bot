@@ -33,6 +33,38 @@ const STRONG_ICE_TERMS = [
 ];
 
 /**
+ * アイスであることがほぼ確定する固有名詞。
+ * PR TIMES の RSS 要約は途中で切れるため、「ガリガリ君の新フレーバーが新発売」の
+ * ようにアイスという語が一度も出てこない告知が実在する。
+ * 商品名・ブランド名で拾えるようにしておかないと、有名商品ほど取りこぼす。
+ */
+const ICE_BRANDS = [
+  "ガリガリ君", "ガツン、と", "ブラックモンブラン", "ミルクック",
+  "パルム", "PARM", "ピノ", "PINO", "MOW", "エッセル", "スーパーカップ",
+  "ジャイアントコーン", "牧場しぼり", "たべる牧場", "クーリッシュ",
+  "爽", "モナ王", "レディーボーデン",
+  "ハーゲンダッツ", "サーティワン", "ブルーシール",
+  "あずきバー", "やわもちアイス", "スイカバー", "ホームランバー",
+  "白くま", "しろくま", "チョコモナカジャンボ", "バニラモナカジャンボ",
+  "雪見だいふく", "サクレ", "ガリガリ君リッチ",
+  "板チョコアイス", "セブンティーンアイス",
+  "パピコ", "アイスの実", "ジャイアントカプリコ",
+  "ざくざくバー", "宇治抹茶バー", "コールドストーン",
+];
+
+/**
+ * アイスを主力とするメーカー・ブランド。
+ * ここが配信元なら「発売告知」であるだけで候補に上げ、可否は Claude に委ねる。
+ * 各社の配信本数は多くないので、この緩さで費用は問題にならない。
+ */
+const ICE_COMPANIES = [
+  "赤城乳業", "ロッテ", "森永乳業", "森永製菓", "明治", "江崎グリコ",
+  "井村屋", "オハヨー乳業", "協同乳業", "ハーゲンダッツ", "シャトレーゼ",
+  "竹下製菓", "丸永製菓", "セイカ食品", "フタバ食品", "小林製菓",
+  "サーティワン", "B-R サーティワン", "日世", "ロッテアイス", "久保田食品",
+];
+
+/**
  * 単独では弱いが、アイスらしい文脈語と同時に出れば候補にする語。
  */
 const WEAK_ICE_TERMS = ["アイス", "氷", "フローズン", "冷菓", "ひんやり"];
@@ -137,7 +169,7 @@ export function prefilter(release: Release): PrefilterResult {
   const text = `${release.title}\n${release.summary}\n${release.corp}`;
 
   const excluded = found(text, EXCLUDE_TERMS);
-  const strong = found(text, STRONG_ICE_TERMS);
+  const strong = [...found(text, STRONG_ICE_TERMS), ...found(text, ICE_BRANDS)];
 
   // 除外語しか無いのに強い語が無いなら落とす。
   // （「アイスクリームとアイスコーヒーのセット」のようなケースは残す）
@@ -151,13 +183,19 @@ export function prefilter(release: Release): PrefilterResult {
 
   let iceHits = strong;
   if (iceHits.length === 0) {
-    const weak = found(text, WEAK_ICE_TERMS);
-    const ctx = found(text, CONTEXT_TERMS);
-    // 弱い語は文脈語2つ以上とセットのときだけ通す
-    if (weak.length > 0 && ctx.length >= 2) {
-      iceHits = [...weak, ...ctx];
+    // 配信元がアイスメーカーなら、それ自体を強いシグナルとして扱う
+    const company = found(release.corp, ICE_COMPANIES);
+    if (company.length > 0) {
+      iceHits = company;
     } else {
-      return { passed: false, reason: "アイス関連語なし", hits: [] };
+      const weak = found(text, WEAK_ICE_TERMS);
+      const ctx = found(text, CONTEXT_TERMS);
+      // 弱い語は文脈語2つ以上とセットのときだけ通す
+      if (weak.length > 0 && ctx.length >= 2) {
+        iceHits = [...weak, ...ctx];
+      } else {
+        return { passed: false, reason: "アイス関連語なし", hits: [] };
+      }
     }
   }
 

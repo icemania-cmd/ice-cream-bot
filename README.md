@@ -1,30 +1,27 @@
 # 🍦 Ice Cream Bot
 
-PR TIMESのアイスクリーム関連プレスリリースを自動取得し、Xに投稿するBot。
+PR TIMESのアイスクリーム関連プレスリリースとコンビニ各社サイトを自動取得し、
+新商品情報をXに投稿するBot。**リマインドなし・1商品1投稿のシンプル構成。**
 
-> **2026-07 承認制に移行**: 過去に曖昧な情報が自動投稿された反省から、Botは下書き生成までとし、人間が `/admin` で承認した投稿のみXに出る方式に変更。リマインド・コンビニスキャンのcronは停止中。
-
-## アーキテクチャ（承認制モード）
+## アーキテクチャ
 
 ```
-PR TIMES RSS → フィルタリング → Claude API（下書き生成） → 事実チェック
-                                                    ↓
-                                          Redis 下書きキュー
-                                                    ↓
-                              /admin で人間が確認・編集・承認 → X API（投稿）
-```
+PR TIMES RSS ─┐
+              ├─ フィルタリング → Claude API（投稿文生成） → X API（投稿）
+コンビニサイト ┘                            ↕
+                                    Upstash Redis（重複防止・レート制限）
 
-- cron（3時間おき）はスキャンと下書き生成のみ。**Xへの自動投稿は行わない**
-- 下書きには事実チェック警告が付く（発売日・価格・日付・「全国」表記がソース本文で確認できない場合）
-- 承認画面: `https://ice-cream-bot.vercel.app/admin`（環境変数 `ADMIN_SECRET` のパスワードでログイン）
-- 却下した記事は30日間再生成されない。下書きは14日で自動失効
+スケジュール実行: cron-job.org（外部cron・無料）
+※ Vercel Hobbyのcronは1日1回制限のため使用しない
+```
 
 ## 月額ランニングコスト（見積もり）
 
 | サービス | プラン | 費用 |
 |---------|--------|------|
 | Vercel | Hobby（無料） | $0 |
-| Vercel KV | 無料枠 | $0 |
+| Upstash Redis | 無料枠 | $0 |
+| cron-job.org | 無料 | $0 |
 | X API | Free | $0 |
 | Claude API (Haiku) | 従量課金 | ~$0.5〜2/月 |
 | **合計** | | **~$0.5〜2/月** |
@@ -52,17 +49,10 @@ PR TIMES RSS → フィルタリング → Claude API（下書き生成） → �
 ### 3. Vercelへのデプロイ
 
 ```bash
-# リポジトリをGitHubにプッシュ
-git init
 git add .
-git commit -m "initial commit"
-gh repo create ice-cream-bot --private --push
-
-# Vercelにデプロイ
-npx vercel
-
-# Vercel KVを追加（ダッシュボードから）
-# Storage → KV → Create → ice-cream-bot-kv
+git commit -m "update"
+git push        # Vercel連携済みなら自動デプロイ
+# または: npx vercel --prod
 ```
 
 ### 4. 環境変数の設定
@@ -76,40 +66,53 @@ X_ACCESS_TOKEN=（手順1で取得）
 X_ACCESS_TOKEN_SECRET=（手順1で取得）
 ANTHROPIC_API_KEY=（手順2で取得）
 CRON_SECRET=（任意のランダム文字列。openssl rand -hex 32 で生成可）
-ADMIN_SECRET=（/admin ログイン用パスワード。未設定の場合は CRON_SECRET が代わりに使われる）
+KV_REST_API_URL=（Upstash Redis）
+KV_REST_API_TOKEN=（Upstash Redis）
 ```
 
-### 5. 動作確認
+### 5. 外部cronの設定（重要）
+
+**これを設定しないとBotは一切動きません。**
+`docs/setup-external-cron.md` の手順に従い、cron-job.org で
+以下の3ジョブを登録する（すべて `Authorization: Bearer CRON_SECRET` ヘッダー付き）:
+
+| URL | スケジュール（JST） |
+|---|---|
+| `/api/cron` | 毎時0分 |
+| `/api/cvs-scan` | 2時間おき |
+| `/api/cvs-post` | 12:00 / 12:30 / 18:00 / 18:30 |
+
+### 6. 動作確認
 
 ```bash
-# ローカルで動作確認する場合
-cp .env.example .env.local
-# .env.local に実際のキーを記入
-npm install
-npm run dev
+# 手動実行（実際に投稿される）
+curl -H "Authorization: Bearer YOUR_CRON_SECRET" https://your-app.vercel.app/api/cron
 
-# Cronエンドポイントをテスト
-curl -H "Authorization: Bearer YOUR_CRON_SECRET" http://localhost:3000/api/cron
+# dry-run（投稿せず判定結果のみ確認）
+curl -H "Authorization: Bearer YOUR_CRON_SECRET" https://your-app.vercel.app/api/test-filters
 ```
 
 ## ファイル構成
 
 ```
 src/
-├── app/
-│   ├── api/cron/route.ts   # Cronジョブのエントリポイント
-│   ├── layout.tsx           # レイアウト
-│   └── page.tsx             # トップページ（ステータス表示）
+├── app/api/
+│   ├── cron/route.ts        # PR TIMESスキャン＋投稿
+│   ├── cvs-scan/route.ts    # コンビニ商品スキャン
+│   ├── cvs-post/route.ts    # コンビニ商品投稿
+│   └── test-filters/route.ts # dry-run確認用
 └── lib/
     ├── rss.ts               # PR TIMES RSS取得・パース
     ├── comment.ts           # Claude APIで投稿文生成
+    ├── cvs-scraper.ts       # コンビニサイトスクレイピング
     ├── x-client.ts          # X API投稿（OAuth 1.0a自前実装）
-    └── store.ts             # Vercel KVで重複管理
+    └── store.ts             # Redisで重複防止・レート制限
 ```
 
 ## カスタマイズ
 
 - **検索キーワード**: `src/lib/rss.ts` の `KEYWORDS` 配列を編集
+- **対象企業**: `src/lib/rss.ts` の `COMPANY_FEEDS` 配列を編集
 - **投稿スタイル**: `src/lib/comment.ts` のプロンプトを編集
-- **Cron間隔**: `vercel.json` の `schedule` を変更（現在は3時間ごと）
-- **1回あたりの投稿上限**: `src/app/api/cron/route.ts` の `MAX_POSTS_PER_RUN` を変更
+- **1回あたりの投稿上限**: `src/app/api/cron/route.ts` の `MAX_POSTS_PER_RUN`
+- **1日の投稿上限**: `src/lib/store.ts` の `MAX_DAILY_POSTS`（現在20件）

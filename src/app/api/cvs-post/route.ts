@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateCvsPost } from "@/lib/comment";
 import { postTweet, uploadImageToX } from "@/lib/x-client";
-import { getCvsProductsToPost, markCvsProductPosted, saveReminder, isDuplicateWithPrTimes } from "@/lib/store";
+import {
+  getCvsProductsToPost,
+  markCvsProductPosted,
+  isDuplicateWithPrTimes,
+  canPostNow,
+  canPostToday,
+  recordPostTime,
+  incrementDailyCount,
+} from "@/lib/store";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -158,6 +166,18 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
+        // グローバルレート制限チェック（PR TIMES投稿と共通）
+        if (!(await canPostToday())) {
+          console.log(`⛔ 本日の投稿上限に達したため停止`);
+          results.push({ name: product.name, store: product.store, status: "skipped_daily_limit" });
+          continue;
+        }
+        if (!(await canPostNow())) {
+          console.log(`⏳ 15分ギャップ未達のためスキップ: ${product.name}`);
+          results.push({ name: product.name, store: product.store, status: "skipped_gap" });
+          continue;
+        }
+
         // 投稿文を生成
         const postText = await generateCvsPost(product);
         console.log(`生成された投稿文:\n${postText}\n`);
@@ -197,34 +217,8 @@ export async function GET(request: NextRequest) {
 
         if (result.success) {
           await markCvsProductPosted(product.productId);
-
-          // 発売日が「明後日以降」の場合はリマインド予約を保存（翌日発売は本投稿が前日告知を兼ねる）
-          try {
-            const tomorrowJst = new Date(nowJst);
-            tomorrowJst.setDate(tomorrowJst.getDate() + 1);
-            const tomorrowStr = tomorrowJst.toISOString().split("T")[0];
-            if (parsedDate > tomorrowStr) {
-              const REMINDER_HOURS = [7, 12, 20] as const;
-              const chosenHour = REMINDER_HOURS[Math.floor(Math.random() * REMINDER_HOURS.length)];
-              const minute = Math.floor(Math.random() * 60);
-              await saveReminder({
-                title: product.name,
-                description: product.description || "",
-                guid: `cvs_reminder:${product.productId}`,
-                imageUrl: product.imageUrl,
-                releaseDate: parsedDate,
-                reminderType: "day_before",
-                scheduledDate: new Date(new Date(parsedDate + "T00:00:00+09:00").getTime() - 86400000).toISOString().split("T")[0],
-                scheduledHour: chosenHour,
-                scheduledMinute: minute,
-                type: "cvs",
-                store: product.store,
-              });
-              console.log(`📅 CVSリマインド予約: ${parsedDate} ${chosenHour}時 - ${product.name}`);
-            }
-          } catch (reminderError) {
-            console.error("CVSリマインド予約エラー:", reminderError);
-          }
+          await recordPostTime();
+          await incrementDailyCount();
 
           results.push({
             name: product.name,

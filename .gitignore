@@ -5,3 +5,8 @@ node_modules/
 .vercel
 .claude/
 tsconfig.tsbuildinfo
+
+# 環境変数ファイルは絶対にコミットしない
+.env
+.env.*
+!.env.example

@@ -1,398 +1,398 @@
 import { Redis } from "@upstash/redis";
+import {
+  MAX_DAILY_POSTS,
+  MIN_POST_GAP_MINUTES,
+  RUN_LOG_KEEP,
+  TTL_POSTED_DAYS,
+  TTL_REVIEW_DAYS,
+  TTL_SEEN_DAYS,
+} from "./config";
+
+/**
+ * 状態管理。
+ *
+ * 旧実装は redis.keys('posted:*') で全キーを舐めてから1件ずつ GET していた。
+ * Upstash は1コマンド1HTTPなので、投稿済み100件×記事N件で数千往復になり、
+ * これがタイムアウトと課金増の主因だった。
+ * ここでは ZSET のメンバー判定とパイプラインだけで済ませ、KEYS は一切使わない。
+ */
 
 export const redis = new Redis({
-  url: process.env.KV_REST_API_URL!,
-  token: process.env.KV_REST_API_TOKEN!,
+  url: process.env.KV_REST_API_URL || "",
+  token: process.env.KV_REST_API_TOKEN || "",
 });
 
-const KEY_PREFIX = "posted:";
-const EXPIRY_SECONDS = 60 * 60 * 24 * 30; // 30日間保持
+const K = {
+  seen: "v2:seen",
+  posted: "v2:posted",
+  review: "v2:review",
+  ready: "v2:ready",
+  rejected: "v2:rejected",
+  runs: "v2:runs",
+  lastPost: "v2:lastpost",
+  daily: (jstDate: string) => `v2:daily:${jstDate}`,
+  postItem: (guid: string) => `v2:post:${guid}`,
+};
 
-// ===== 投稿済み管理 =====
+const DAY = 24 * 60 * 60 * 1000;
 
-export async function isAlreadyPosted(guid: string): Promise<boolean> {
-  const exists = await redis.exists(`${KEY_PREFIX}${guid}`);
-  return exists === 1;
+export function jstDateString(at: Date = new Date()): string {
+  return new Date(at.getTime() + 9 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
 }
 
-export async function markAsPosted(guid: string, title?: string, imageUrl?: string): Promise<void> {
-  const value = title && imageUrl
-    ? JSON.stringify({ t: title, i: imageUrl })
-    : title || "1";
-  await redis.set(`${KEY_PREFIX}${guid}`, value, { ex: EXPIRY_SECONDS });
-}
-
-export async function getPostedCount(): Promise<number> {
-  const keys = await redis.keys(`${KEY_PREFIX}*`);
-  return keys.length;
-}
-
-// ===== グローバル投稿レート制限 =====
-
-const LAST_POST_TIME_KEY = "last_post_time";
-const POST_GAP_MS = 15 * 60 * 1000; // 15分
-
-/** 直前の投稿から15分以上経過しているか確認する */
-export async function canPostNow(): Promise<boolean> {
-  const lastPostTime = await redis.get<string>(LAST_POST_TIME_KEY);
-  if (!lastPostTime) return true;
-  return Date.now() - parseInt(lastPostTime as string) >= POST_GAP_MS;
-}
-
-/** 投稿時刻を記録する */
-export async function recordPostTime(): Promise<void> {
-  await redis.set(LAST_POST_TIME_KEY, Date.now().toString(), { ex: 60 * 60 * 24 });
-}
-
-// ===== 1日の投稿上限（20件）=====
-
-const DAILY_COUNT_PREFIX = "daily_post_count:";
-const MAX_DAILY_POSTS = 20;
-
-function getJstDateStr(): string {
-  return new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().split("T")[0];
-}
-
-/** 本日の投稿件数が上限未満か確認する */
-export async function canPostToday(): Promise<boolean> {
-  const key = `${DAILY_COUNT_PREFIX}${getJstDateStr()}`;
-  const count = await redis.get<string>(key);
-  return !count || parseInt(count as string) < MAX_DAILY_POSTS;
-}
-
-/** 本日の投稿件数をインクリメントして現在値を返す */
-export async function incrementDailyCount(): Promise<number> {
-  const key = `${DAILY_COUNT_PREFIX}${getJstDateStr()}`;
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, 48 * 3600);
-  return count;
-}
-
-// ===== リマインド予約機能 =====
-
-const REMINDER_PREFIX = "reminder:";
-
-export type ReminderType = "week_before" | "three_days_before" | "day_before" | "release_day";
-
-export interface ReminderData {
-  title: string;
-  description: string;
-  link?: string;
-  imageUrl?: string;
-  guid: string;
-  releaseDate: string;      // 発売日 YYYY-MM-DD
-  reminderType: ReminderType;
-  scheduledDate: string;    // 投稿予定日 YYYY-MM-DD
-  scheduledHour: number;    // JST: 7 / 12 / 20
-  scheduledMinute: number;  // 0-59 ランダム
-  chosenHour?: number;      // 旧形式との互換用（読み込み時のみ）
-  type?: "prtimes" | "cvs"; // リマインド種別（CVS対応）
-  store?: string;            // CVSリマインド用: コンビニ名
-}
-
-/**
- * リマインド予約を保存する
- * キー: reminder:{scheduledDate}:{reminderType}:{guid}
- */
-export async function saveReminder(data: ReminderData): Promise<void> {
-  const key = `${REMINDER_PREFIX}${data.scheduledDate}:${data.reminderType}:${data.guid}`;
-  // 発売日+2日後に自動削除
-  const releaseTime = new Date(data.releaseDate + "T00:00:00+09:00").getTime();
-  const ttlSeconds = Math.max(
-    Math.floor((releaseTime + 2 * 24 * 60 * 60 * 1000 - Date.now()) / 1000),
-    60 * 60 * 24
-  );
-  await redis.set(key, JSON.stringify(data), { ex: ttlSeconds });
-  console.log(`リマインド予約保存: ${data.scheduledDate} ${data.scheduledHour}:${String(data.scheduledMinute).padStart(2, "0")} [${data.reminderType}] - ${data.title}`);
-}
-
-/**
- * 複数のリマインドをまとめて予約する
- * daysUntilRelease に応じてスケジュールするタイプを決定する
- */
-export async function scheduleReminders(
-  article: {
-    title: string;
-    description: string;
-    link: string;
-    imageUrl?: string;
-    guid: string;
-    releaseDate: string;
-  },
-  daysUntilRelease: number
-): Promise<void> {
-  const HOUR_SLOTS = [7, 12, 20];
-
-  // スケジュールするタイプと投稿予定日を決定
-  const entries: { type: ReminderType; scheduledDate: string }[] = [];
-
-  const addDays = (base: string, days: number): string => {
-    const d = new Date(base + "T00:00:00+09:00");
-    d.setDate(d.getDate() + days);
-    return d.toISOString().split("T")[0];
-  };
-
-  const today = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().split("T")[0];
-
-  if (daysUntilRelease >= 8) {
-    const d = addDays(article.releaseDate, -7);
-    if (d > today) entries.push({ type: "week_before", scheduledDate: d });
-  }
-  if (daysUntilRelease >= 4) {
-    const d = addDays(article.releaseDate, -3);
-    if (d > today) entries.push({ type: "three_days_before", scheduledDate: d });
-  }
-  if (daysUntilRelease >= 2) {
-    const d = addDays(article.releaseDate, -1);
-    if (d > today) entries.push({ type: "day_before", scheduledDate: d });
-  }
-  // release_day は常に追加（当日は7時台固定）
-  entries.push({ type: "release_day", scheduledDate: article.releaseDate });
-
-  // 同日に複数ある場合は時間枠が被らないよう割り当て
-  const usedHours: Record<string, number[]> = {};
-  for (const { type, scheduledDate } of entries) {
-    usedHours[scheduledDate] = usedHours[scheduledDate] ?? [];
-    let hour: number;
-    if (type === "release_day") {
-      hour = 7; // 発売当日は朝固定
-    } else {
-      const available = HOUR_SLOTS.filter(h => !usedHours[scheduledDate].includes(h));
-      const pool = available.length > 0 ? available : HOUR_SLOTS;
-      hour = pool[Math.floor(Math.random() * pool.length)];
-    }
-    usedHours[scheduledDate].push(hour);
-    const minute = Math.floor(Math.random() * 60);
-
-    await saveReminder({
-      ...article,
-      reminderType: type,
-      scheduledDate,
-      scheduledHour: hour,
-      scheduledMinute: minute,
-    });
-  }
-}
-
-/**
- * 指定日・時・分のリマインドを取得する（10分窓）
- * 旧形式（chosenHour あり）にも対応
- */
-export async function getRemindersForTimeSlot(
-  date: string,
-  jstHour: number,
-  jstMinute: number
-): Promise<ReminderData[]> {
-  const pattern = `${REMINDER_PREFIX}${date}:*`;
-  const keys = await redis.keys(pattern);
-  console.log(`リマインド検索: ${pattern} → ${keys.length}件`);
-
-  const windowStart = Math.floor(jstMinute / 10) * 10;
-  const windowEnd = windowStart + 10;
-
-  const reminders: ReminderData[] = [];
-  for (const key of keys) {
-    const raw = await redis.get<string>(key);
-    if (!raw) continue;
+function parse<T>(raw: unknown): T | null {
+  if (raw == null) return null;
+  if (typeof raw === "object") return raw as T;
+  if (typeof raw === "string") {
     try {
-      const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as Partial<ReminderData> & { chosenHour?: number };
-
-      // 旧形式の正規化（reminderType なし → day_before 扱い）
-      if (!parsed.reminderType) {
-        const chosenHour = parsed.chosenHour ?? 20;
-        if (chosenHour !== jstHour) continue;
-        reminders.push({
-          ...parsed,
-          reminderType: "day_before",
-          scheduledDate: date,
-          scheduledHour: chosenHour,
-          scheduledMinute: 0, // 旧形式は分の概念なし、常にマッチ
-        } as ReminderData);
-        continue;
-      }
-
-      // 新形式: 時刻ウィンドウチェック
-      if (parsed.scheduledHour !== jstHour) continue;
-      const min = parsed.scheduledMinute ?? 0;
-      if (min < windowStart || min >= windowEnd) continue;
-
-      reminders.push(parsed as ReminderData);
+      return JSON.parse(raw) as T;
     } catch {
-      console.error(`リマインドデータ解析エラー: ${key}`);
+      return null;
     }
-  }
-  return reminders;
-}
-
-/** 旧形式との互換用: 発売日でリマインドを取得 */
-export async function getRemindersForDate(date: string): Promise<ReminderData[]> {
-  return getRemindersForTimeSlot(date, 20, 0);
-}
-
-// ===== リマインド投稿済み管理 =====
-
-export async function isReminderTypePosted(reminderType: ReminderType, guid: string): Promise<boolean> {
-  // 新形式キー
-  const newKey = `reminder_posted:${reminderType}:${guid}`;
-  if (await redis.exists(newKey) === 1) return true;
-  // 旧形式キー（day_before の後方互換）
-  if (reminderType === "day_before") {
-    const oldKey = `reminder_posted:${guid}`;
-    if (await redis.exists(oldKey) === 1) return true;
-  }
-  return false;
-}
-
-export async function markReminderTypeAsPosted(reminderType: ReminderType, guid: string): Promise<void> {
-  await redis.set(`reminder_posted:${reminderType}:${guid}`, "1", { ex: EXPIRY_SECONDS });
-}
-
-/** 旧形式との互換用 */
-export async function isReminderPosted(guid: string): Promise<boolean> {
-  return isReminderTypePosted("day_before", guid);
-}
-
-export async function markReminderAsPosted(guid: string): Promise<void> {
-  await redis.set(`reminder_posted:${guid}`, "1", { ex: EXPIRY_SECONDS });
-}
-
-// ===== 発売日キャッシュ（Claude API節約用）=====
-
-const RELEASE_DATE_PREFIX = "release_date:";
-
-export async function getCachedReleaseDate(
-  guid: string
-): Promise<string | null | undefined> {
-  const v = await redis.get<string>(`${RELEASE_DATE_PREFIX}${guid}`);
-  if (v === null || v === undefined) return undefined;
-  if (v === "NONE") return null;
-  return typeof v === "string" ? v : String(v);
-}
-
-export async function setCachedReleaseDate(
-  guid: string,
-  date: string | null
-): Promise<void> {
-  const ttl = date ? EXPIRY_SECONDS : 60 * 60;
-  await redis.set(`${RELEASE_DATE_PREFIX}${guid}`, date ?? "NONE", { ex: ttl });
-}
-
-// ===== CVSコンビニ商品スクレイピング機能 =====
-
-const CVS_PRODUCT_PREFIX = "cvs_product:";
-const CVS_QUEUE_PREFIX = "cvs_queue:";
-const CVS_POSTED_PREFIX = "cvs_posted:";
-
-export interface CvsProductData {
-  store: string;
-  name: string;
-  maker: string;
-  price: string;
-  releaseDate: string;
-  region: string;
-  description: string;
-  imageUrl: string;
-  productId: string;
-  detectedAt: string;
-}
-
-export async function isCvsProductKnown(productId: string): Promise<boolean> {
-  const exists = await redis.exists(`${CVS_PRODUCT_PREFIX}${productId}`);
-  return exists === 1;
-}
-
-export async function isDuplicateWithCvs(articleTitle: string): Promise<boolean> {
-  const postedKeys = await redis.keys(`${CVS_POSTED_PREFIX}*`);
-  for (const key of postedKeys) {
-    const productId = key.slice(CVS_POSTED_PREFIX.length);
-    const productData = await redis.get<string>(`${CVS_PRODUCT_PREFIX}${productId}`);
-    if (!productData) continue;
-    try {
-      const product = (typeof productData === "string" ? JSON.parse(productData) : productData) as CvsProductData;
-      if (product.name && product.name.length >= 4 && articleTitle.includes(product.name)) return true;
-    } catch { continue; }
-  }
-  const queueKeys = await redis.keys(`${CVS_QUEUE_PREFIX}*`);
-  for (const key of queueKeys) {
-    const productData = await redis.get<string>(key);
-    if (!productData) continue;
-    try {
-      const product = (typeof productData === "string" ? JSON.parse(productData) : productData) as CvsProductData;
-      if (product.name && product.name.length >= 4 && articleTitle.includes(product.name)) return true;
-    } catch { continue; }
-  }
-  return false;
-}
-
-export async function isDuplicateWithPrTimes(productName: string): Promise<boolean> {
-  const postedKeys = await redis.keys(`${KEY_PREFIX}*`);
-  for (const key of postedKeys) {
-    const value = await redis.get(key);
-    if (!value) continue;
-    let title = "";
-    if (typeof value === "object" && value !== null) {
-      title = (value as Record<string, string>).t || "";
-    } else if (typeof value === "string") {
-      title = value;
-    } else {
-      continue;
-    }
-    if (title && title.includes(productName)) return true;
-  }
-  return false;
-}
-
-export async function findPrTimesImage(productName: string): Promise<string | null> {
-  const postedKeys = await redis.keys(`${KEY_PREFIX}*`);
-  const keywords = [
-    productName,
-    ...productName.split(/[\s　・「」、。！？〜\/＆&]+/).filter(k => k.length >= 3),
-  ];
-  for (const key of postedKeys) {
-    const value = await redis.get(key);
-    if (!value) continue;
-    let title = "";
-    let imageUrl = "";
-    if (typeof value === "object" && value !== null) {
-      const obj = value as Record<string, string>;
-      title = obj.t || "";
-      imageUrl = obj.i || "";
-    } else { continue; }
-    if (!imageUrl || !title) continue;
-    if (keywords.some(kw => title.includes(kw))) return imageUrl;
   }
   return null;
 }
 
-export async function saveCvsProduct(product: CvsProductData): Promise<void> {
-  const productKey = `${CVS_PRODUCT_PREFIX}${product.productId}`;
-  const queueKey = `${CVS_QUEUE_PREFIX}${product.productId}`;
-  await redis.set(productKey, JSON.stringify(product), { ex: EXPIRY_SECONDS });
-  await redis.set(queueKey, JSON.stringify(product), { ex: 60 * 60 * 24 * 7 });
-  console.log(`CVS商品保存: ${product.store} - ${product.name}`);
-}
+// ===== 既知判定 =====
 
-export async function getCvsProductsToPost(limit: number = 1): Promise<CvsProductData[]> {
-  const queueKeys = await redis.keys(`${CVS_QUEUE_PREFIX}*`);
-  const products: CvsProductData[] = [];
-  for (const key of queueKeys) {
-    if (products.length >= limit) break;
-    const data = await redis.get<string>(key);
-    if (data) {
-      try {
-        const parsed = typeof data === "string" ? JSON.parse(data) : data;
-        const product = parsed as CvsProductData;
-        const posted = await redis.exists(`${CVS_POSTED_PREFIX}${product.productId}`);
-        if (posted === 0) products.push(product);
-      } catch {
-        console.error(`CVSキューデータ解析エラー: ${key}`);
-      }
-    }
+export type KnownState =
+  | "new"
+  | "seen"
+  | "posted"
+  | "review"
+  | "ready"
+  | "rejected";
+
+/**
+ * 記事群の状態をまとめて判定する。
+ * 1記事1往復ではなくパイプラインで1往復にまとめるのが肝。
+ */
+export async function classifyKnown(
+  guids: string[]
+): Promise<Map<string, KnownState>> {
+  const result = new Map<string, KnownState>();
+  if (guids.length === 0) return result;
+
+  const pipe = redis.pipeline();
+  for (const g of guids) {
+    pipe.zscore(K.posted, g);
+    pipe.zscore(K.review, g);
+    pipe.zscore(K.ready, g);
+    pipe.zscore(K.rejected, g);
+    pipe.zscore(K.seen, g);
   }
-  return products;
+  const scores = (await pipe.exec()) as (number | null)[];
+
+  guids.forEach((g, i) => {
+    const [posted, review, ready, rejected, seen] = scores.slice(i * 5, i * 5 + 5);
+    if (posted != null) result.set(g, "posted");
+    else if (review != null) result.set(g, "review");
+    else if (ready != null) result.set(g, "ready");
+    else if (rejected != null) result.set(g, "rejected");
+    else if (seen != null) result.set(g, "seen");
+    else result.set(g, "new");
+  });
+  return result;
 }
 
-export async function markCvsProductPosted(productId: string): Promise<void> {
-  await redis.set(`${CVS_POSTED_PREFIX}${productId}`, "1", { ex: EXPIRY_SECONDS });
-  await redis.del(`${CVS_QUEUE_PREFIX}${productId}`);
+/**
+ * 「見た」記録。
+ * 判定に失敗した記事を無限に再処理しないためのもので、投稿済みとは区別する。
+ */
+export async function markSeen(guids: string[]): Promise<void> {
+  if (guids.length === 0) return;
+  const now = Date.now();
+  const pipe = redis.pipeline();
+  for (const g of guids) pipe.zadd(K.seen, { score: now, member: g });
+  await pipe.exec();
+}
+
+export async function markPosted(
+  guid: string,
+  data: {
+    title: string;
+    link: string;
+    text: string;
+    tweetId?: string;
+    imageUrl?: string;
+    releaseDate?: string;
+    route: "auto" | "approved";
+  }
+): Promise<void> {
+  const now = Date.now();
+  const pipe = redis.pipeline();
+  pipe.zadd(K.posted, { score: now, member: guid });
+  pipe.set(K.postItem(guid), JSON.stringify({ ...data, postedAt: new Date().toISOString() }), {
+    ex: TTL_POSTED_DAYS * 86400,
+  });
+  pipe.zrem(K.review, guid);
+  pipe.zrem(K.ready, guid);
+  pipe.del(`v2:review:${guid}`);
+  pipe.del(`v2:ready:${guid}`);
+  await pipe.exec();
+}
+
+// ===== キュー（承認待ち／投稿待ち）=====
+
+/**
+ * 2本のキューを同じ構造で扱う。
+ *  - ready : 機械照合を全部通過し、投稿枠が空くのを待っているもの（自動投稿対象）
+ *  - review: 1つでも照合に引っかかり、人間の確認が要るもの
+ * ready を設けているのは、連投防止で見送った記事を次回また Claude に
+ * 投げ直すという無駄（＝旧実装の課金増の一因）を無くすため。
+ */
+export type QueueName = "ready" | "review";
+
+const queueKey = (q: QueueName) => `v2:${q}`;
+const queueItemKey = (q: QueueName, guid: string) => `v2:${q}:${guid}`;
+
+export interface QueuedItem {
+  guid: string;
+  title: string;
+  link: string;
+  corp: string;
+  publishedAt: string;
+  imageUrl?: string;
+  releaseDate: string;
+  productName: string;
+  maker: string;
+  price: string;
+  region: string;
+  text: string;
+  blocking: string[];
+  warnings: string[];
+  /** 照合に使った原文の抜粋。管理画面で目視突き合わせできるようにする。 */
+  sourceExcerpt: string;
+  createdAt: string;
+}
+
+export async function enqueue(q: QueueName, item: QueuedItem): Promise<void> {
+  const ttl = (q === "ready" ? 3 : TTL_REVIEW_DAYS) * 86400;
+  const pipe = redis.pipeline();
+  pipe.zadd(queueKey(q), { score: Date.now(), member: item.guid });
+  pipe.set(queueItemKey(q, item.guid), JSON.stringify(item), { ex: ttl });
+  await pipe.exec();
+}
+
+export async function getQueued(
+  q: QueueName,
+  guid: string
+): Promise<QueuedItem | null> {
+  return parse<QueuedItem>(await redis.get(queueItemKey(q, guid)));
+}
+
+/** 古い順に返す。速報は先に入ったものから出したいので rev は使わない。 */
+export async function listQueue(
+  q: QueueName,
+  limit = 50
+): Promise<QueuedItem[]> {
+  const guids = (await redis.zrange(queueKey(q), 0, limit - 1)) as string[];
+  if (guids.length === 0) return [];
+
+  const pipe = redis.pipeline();
+  for (const g of guids) pipe.get(queueItemKey(q, g));
+  const raws = await pipe.exec();
+
+  const items: QueuedItem[] = [];
+  raws.forEach((raw, i) => {
+    const item = parse<QueuedItem>(raw);
+    if (item) items.push(item);
+    else void redis.zrem(queueKey(q), guids[i]); // TTL切れの残骸を掃除
+  });
+  return items;
+}
+
+export async function dequeue(q: QueueName, guid: string): Promise<void> {
+  const pipe = redis.pipeline();
+  pipe.zrem(queueKey(q), guid);
+  pipe.del(queueItemKey(q, guid));
+  await pipe.exec();
+}
+
+export async function queueSize(q: QueueName): Promise<number> {
+  return (await redis.zcard(queueKey(q))) as number;
+}
+
+export async function reject(guid: string): Promise<void> {
+  const pipe = redis.pipeline();
+  pipe.zadd(K.rejected, { score: Date.now(), member: guid });
+  pipe.zrem(queueKey("review"), guid);
+  pipe.zrem(queueKey("ready"), guid);
+  pipe.del(queueItemKey("review", guid));
+  pipe.del(queueItemKey("ready", guid));
+  await pipe.exec();
+}
+
+// ===== レート制限 =====
+
+export interface RateStatus {
+  canPost: boolean;
+  reason?: string;
+  todayCount: number;
+  limit: number;
+  minutesUntilNextSlot: number;
+}
+
+export async function getRateStatus(): Promise<RateStatus> {
+  const day = jstDateString();
+  const [countRaw, lastRaw] = (await redis
+    .pipeline()
+    .get(K.daily(day))
+    .get(K.lastPost)
+    .exec()) as [unknown, unknown];
+
+  const todayCount = Number(countRaw ?? 0);
+  const last = Number(lastRaw ?? 0);
+  const elapsedMin = last ? (Date.now() - last) / 60000 : Infinity;
+  const minutesUntilNextSlot = Math.max(
+    0,
+    Math.ceil(MIN_POST_GAP_MINUTES - elapsedMin)
+  );
+
+  if (todayCount >= MAX_DAILY_POSTS) {
+    return {
+      canPost: false,
+      reason: `本日の投稿上限に到達（${todayCount}/${MAX_DAILY_POSTS}）`,
+      todayCount,
+      limit: MAX_DAILY_POSTS,
+      minutesUntilNextSlot,
+    };
+  }
+  if (minutesUntilNextSlot > 0) {
+    return {
+      canPost: false,
+      reason: `連投防止のため待機中（あと約${minutesUntilNextSlot}分）`,
+      todayCount,
+      limit: MAX_DAILY_POSTS,
+      minutesUntilNextSlot,
+    };
+  }
+  return {
+    canPost: true,
+    todayCount,
+    limit: MAX_DAILY_POSTS,
+    minutesUntilNextSlot: 0,
+  };
+}
+
+export async function recordPost(): Promise<void> {
+  const day = jstDateString();
+  const pipe = redis.pipeline();
+  pipe.incr(K.daily(day));
+  pipe.expire(K.daily(day), 3 * 86400);
+  pipe.set(K.lastPost, Date.now().toString(), { ex: 3 * 86400 });
+  await pipe.exec();
+}
+
+// ===== 実行ログ =====
+
+export interface RunLog {
+  at: string;
+  mode: string;
+  fetched: number;
+  newCount: number;
+  candidates: number;
+  classified: number;
+  posted: number;
+  queued: number;
+  skipped: number;
+  errors: string[];
+  durationMs: number;
+  notes: string[];
+}
+
+export async function appendRunLog(log: RunLog): Promise<void> {
+  const pipe = redis.pipeline();
+  pipe.lpush(K.runs, JSON.stringify(log));
+  pipe.ltrim(K.runs, 0, RUN_LOG_KEEP - 1);
+  await pipe.exec();
+}
+
+export async function listRunLogs(limit = 20): Promise<RunLog[]> {
+  const raws = (await redis.lrange(K.runs, 0, limit - 1)) as unknown[];
+  return raws.map((r) => parse<RunLog>(r)).filter((r): r is RunLog => !!r);
+}
+
+export interface PostedSummary {
+  guid: string;
+  title: string;
+  link: string;
+  text: string;
+  tweetId?: string;
+  postedAt: string;
+  route: string;
+}
+
+export async function listPosted(limit = 20): Promise<PostedSummary[]> {
+  const guids = (await redis.zrange(K.posted, 0, limit - 1, {
+    rev: true,
+  })) as string[];
+  if (guids.length === 0) return [];
+  const pipe = redis.pipeline();
+  for (const g of guids) pipe.get(K.postItem(g));
+  const raws = await pipe.exec();
+  const out: PostedSummary[] = [];
+  raws.forEach((raw, i) => {
+    const item = parse<Omit<PostedSummary, "guid">>(raw);
+    if (item) out.push({ guid: guids[i], ...item });
+  });
+  return out;
+}
+
+/** 古いメンバーを刈る。ZSET が無限に育つのを防ぐ。 */
+export async function pruneOldEntries(): Promise<void> {
+  const now = Date.now();
+  const pipe = redis.pipeline();
+  pipe.zremrangebyscore(K.seen, 0, now - TTL_SEEN_DAYS * DAY);
+  pipe.zremrangebyscore(K.posted, 0, now - TTL_POSTED_DAYS * DAY);
+  pipe.zremrangebyscore(K.rejected, 0, now - TTL_POSTED_DAYS * DAY);
+  pipe.zremrangebyscore(K.review, 0, now - TTL_REVIEW_DAYS * DAY);
+  pipe.zremrangebyscore(K.ready, 0, now - 3 * DAY);
+  await pipe.exec();
+}
+
+export async function storeHealth(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await redis.set("v2:health", Date.now().toString(), { ex: 120 });
+    const v = await redis.get("v2:health");
+    return { ok: v != null };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ===== 同時実行ロック =====
+
+/**
+ * Vercel の cron は「同じ実行が二重に届くことがある」と明記されている。
+ * ロックを取らないと同じ記事を2回投稿しうるので、実行全体を排他にする。
+ */
+export async function acquireRunLock(ttlSeconds = 280): Promise<boolean> {
+  const res = await redis.set("v2:lock:run", Date.now().toString(), {
+    nx: true,
+    ex: ttlSeconds,
+  });
+  return res === "OK";
+}
+
+export async function releaseRunLock(): Promise<void> {
+  await redis.del("v2:lock:run");
+}
+
+/**
+ * 記事単位の投稿権を取る。ロックをすり抜けた場合の最後の砦。
+ * 一度取れたら TTL 中は同じ記事を誰も投稿できない。
+ */
+export async function claimForPost(guid: string): Promise<boolean> {
+  const res = await redis.set(`v2:claim:${guid}`, "1", {
+    nx: true,
+    ex: 600,
+  });
+  return res === "OK";
+}
+
+export async function releaseClaim(guid: string): Promise<void> {
+  await redis.del(`v2:claim:${guid}`);
 }

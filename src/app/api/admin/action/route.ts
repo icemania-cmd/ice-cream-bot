@@ -1,37 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDraft, deleteDraft, markRejected } from "@/lib/drafts";
-import { postTweet, uploadImageToX } from "@/lib/x-client";
-import { markAsPosted, recordPostTime, incrementDailyCount } from "@/lib/store";
+import { isAdmin } from "@/lib/auth";
+import { MAX_TWEET_WEIGHT } from "@/lib/config";
+import { tweetWeight } from "@/lib/verify";
+import { postTweet, uploadMedia } from "@/lib/x";
+import {
+  dequeue,
+  getQueued,
+  markPosted,
+  recordPost,
+  reject,
+  type QueueName,
+} from "@/lib/store";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
-
-function isAuthorized(request: NextRequest): boolean {
-  // ADMIN_SECRET が未設定の間は CRON_SECRET を管理パスワードとして使う
-  const secret = process.env.ADMIN_SECRET || process.env.CRON_SECRET;
-  if (!secret) return false; // どちらも未設定なら常に拒否
-  return request.headers.get("authorization") === `Bearer ${secret}`;
-}
-
-const MAX_TWEET_WEIGHT = 280;
-
-/** X の文字数カウント近似: 全角2・半角1（URLなし前提） */
-function tweetWeight(text: string): number {
-  let weight = 0;
-  for (const ch of text) {
-    weight += ch.charCodeAt(0) > 0xff ? 2 : 1;
-  }
-  return weight;
-}
+export const maxDuration = 120;
 
 /**
- * 下書きへのアクション
- * POST { guid, action: "approve" | "reject", text? }
- * - approve: (編集済み)本文をその場で X に投稿し、下書きを削除
- * - reject: 下書きを削除し、同じ記事が再生成されないよう記録
+ * 承認待ちに対する操作。
+ * POST { guid, queue: "review" | "ready", action: "approve" | "reject", text? }
+ *
+ * approve は編集後の本文をその場でXへ投稿する。
+ * ここではレート制限を掛けない（人間が明示的に押した操作を機械が握り潰さないため）。
  */
 export async function POST(request: NextRequest) {
-  if (!isAuthorized(request)) {
+  if (!isAdmin(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -39,60 +31,96 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const guid: string = body.guid;
     const action: string = body.action;
+    const queue: QueueName = body.queue === "ready" ? "ready" : "review";
 
     if (!guid || !action) {
-      return NextResponse.json({ error: "guid と action は必須です" }, { status: 400 });
+      return NextResponse.json(
+        { error: "guid と action は必須です" },
+        { status: 400 }
+      );
     }
 
-    const draft = await getDraft(guid);
-    if (!draft) {
-      return NextResponse.json({ error: "下書きが見つかりません（期限切れか処理済み）" }, { status: 404 });
+    const item = await getQueued(queue, guid);
+    if (!item) {
+      return NextResponse.json(
+        { error: "対象が見つかりません（期限切れか処理済み）" },
+        { status: 404 }
+      );
     }
 
     if (action === "reject") {
-      await markRejected(guid);
-      console.log(`🗑️ 却下: ${draft.title}`);
-      return NextResponse.json({ ok: true, action: "rejected" });
+      await reject(guid);
+      return NextResponse.json({ ok: true, action: "却下しました" });
     }
 
-    if (action === "approve") {
-      const text: string = (typeof body.text === "string" && body.text.trim())
+    if (action !== "approve") {
+      return NextResponse.json(
+        { error: `不明なアクション: ${action}` },
+        { status: 400 }
+      );
+    }
+
+    const text =
+      typeof body.text === "string" && body.text.trim()
         ? body.text.trim()
-        : draft.text;
+        : item.text;
 
-      const weight = tweetWeight(text);
-      if (weight > MAX_TWEET_WEIGHT) {
-        return NextResponse.json(
-          { error: `本文が長すぎます（${weight}/${MAX_TWEET_WEIGHT}）。短くしてから投稿してください。` },
-          { status: 400 }
-        );
-      }
-
-      // 画像アップロード（失敗してもテキストのみで投稿続行）
-      let mediaIds: string[] | undefined;
-      if (draft.imageUrl) {
-        const mediaId = await uploadImageToX(draft.imageUrl);
-        if (mediaId) mediaIds = [mediaId];
-      }
-
-      const result = await postTweet(text, mediaIds);
-      if (!result.success) {
-        console.error(`❌ 投稿失敗: ${result.error}`);
-        return NextResponse.json({ error: `X投稿に失敗しました: ${result.error}` }, { status: 502 });
-      }
-
-      await markAsPosted(guid, draft.title, draft.imageUrl);
-      await recordPostTime();
-      await incrementDailyCount();
-      await deleteDraft(guid);
-
-      console.log(`✅ 承認投稿成功: ${draft.title} (tweet ${result.tweetId})`);
-      return NextResponse.json({ ok: true, action: "posted", tweetId: result.tweetId });
+    const weight = tweetWeight(text);
+    if (weight > MAX_TWEET_WEIGHT) {
+      return NextResponse.json(
+        { error: `本文が長すぎます（${weight}/${MAX_TWEET_WEIGHT}）` },
+        { status: 400 }
+      );
+    }
+    if (/(https?:\/\/|www\.)/i.test(text)) {
+      return NextResponse.json(
+        { error: "本文にURLが含まれています" },
+        { status: 400 }
+      );
     }
 
-    return NextResponse.json({ error: `不明なアクション: ${action}` }, { status: 400 });
-  } catch (error) {
-    console.error("承認アクションエラー:", error);
-    return NextResponse.json({ error: "処理中にエラーが発生しました" }, { status: 500 });
+    let mediaIds: string[] | undefined;
+    let imageNote = "画像なし";
+    if (item.imageUrl) {
+      const media = await uploadMedia(item.imageUrl);
+      if (media.mediaId) {
+        mediaIds = [media.mediaId];
+        imageNote = `画像あり(${media.via})`;
+      } else {
+        imageNote = `画像アップロード失敗: ${media.error}`;
+      }
+    }
+
+    const result = await postTweet(text, mediaIds);
+    if (!result.success) {
+      return NextResponse.json(
+        { error: `X投稿に失敗しました: ${result.error}` },
+        { status: 502 }
+      );
+    }
+
+    await markPosted(guid, {
+      title: item.title,
+      link: item.link,
+      text,
+      tweetId: result.tweetId,
+      imageUrl: item.imageUrl,
+      releaseDate: item.releaseDate,
+      route: "approved",
+    });
+    await recordPost();
+    await dequeue(queue, guid);
+
+    return NextResponse.json({
+      ok: true,
+      action: "投稿しました",
+      tweetId: result.tweetId,
+      imageNote,
+    });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : String(e) },
+      { status: 500 }
+    );
   }
 }

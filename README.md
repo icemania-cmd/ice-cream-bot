@@ -1,115 +1,135 @@
-# 🍦 Ice Cream Bot
+# 🍦 アイス速報Bot v2
 
-PR TIMESのアイスクリーム関連プレスリリースを自動取得し、Xに投稿するBot。
+PR TIMES に流れる全プレスリリースから **アイスの新商品発売告知だけ** を検出し、
+画像付きの要約を X（@icemania）へ投稿する Bot。
 
-> **2026-07 承認制に移行**: 過去に曖昧な情報が自動投稿された反省から、Botは下書き生成までとし、人間が `/admin` で承認した投稿のみXに出る方式に変更。リマインド・コンビニスキャンのcronは停止中。
+v1 からの全面刷新版。設計方針は「機能を減らして、壊れる面を減らす」。
 
-## アーキテクチャ（承認制モード）
+---
+
+## 1. どう動くか
 
 ```
-PR TIMES RSS → フィルタリング → Claude API（下書き生成） → 事実チェック
-                                                    ↓
-                                          Redis 下書きキュー
-                                                    ↓
-                              /admin で人間が確認・編集・承認 → X API（投稿）
+PR TIMES 全社RSS (index.rdf)      ← 10分おき
+        │  150件／約2時間分。ここに全リリースが流れる
+        ▼
+  無料の事前フィルタ (filter.ts)   ← 正規表現のみ。API費用ゼロ
+        │  「アイスコーヒー」等を除外し、99%以上をここで落とす
+        ▼
+  記事ページ本文を取得 (prtimes.ts)
+        │  RSS要約は途中で切れるため、照合には本文が要る
+        ▼
+  Claude 1回で判定＋抽出＋文章生成 (classify.ts)
+        │  tool_choice で出力形式を固定。JSONパース失敗が起きない
+        ▼
+  機械照合 (verify.ts)             ← ここが品質の生命線
+        │  発売日・価格・商品名・メーカー名・「全国」表記を原文と文字列一致で確認
+        ├─ 全項目クリア → そのまま自動投稿
+        └─ 1つでも不一致 → /admin の承認待ちへ
+        ▼
+  X へ投稿 (x.ts)                  ← /2/media/upload → /2/tweets
 ```
 
-- cron（3時間おき）はスキャンと下書き生成のみ。**Xへの自動投稿は行わない**
-- 下書きには事実チェック警告が付く（発売日・価格・日付・「全国」表記がソース本文で確認できない場合）
-- 承認画面: `https://ice-cream-bot.vercel.app/admin`（環境変数 `ADMIN_SECRET` のパスワードでログイン）
-- 却下した記事は30日間再生成されない。下書きは14日で自動失効
+状態は Upstash Redis。**`KEYS` による全走査は一切使わない**（v1 の主要なタイムアウト要因）。
 
-## 月額ランニングコスト（見積もり）
+---
 
-| サービス | プラン | 費用 |
-|---------|--------|------|
-| Vercel | Hobby（無料） | $0 |
-| Vercel KV | 無料枠 | $0 |
-| X API | Free | $0 |
-| Claude API (Haiku) | 従量課金 | ~$0.5〜2/月 |
-| **合計** | | **~$0.5〜2/月** |
+## 2. v1 で壊れていた点と、v2 での対処
 
-## セットアップ手順
+| v1 の問題 | v2 の対処 |
+|---|---|
+| 画像アップロードが廃止済みの `upload.twitter.com/1.1/media/upload.json` | `api.x.com/2/media/upload` を本線に。v1.1 は保険としてのみ残す |
+| `redis.keys()` を記事ごとに実行し数千往復 | ZSET のメンバー判定＋パイプライン。KEYS 不使用 |
+| 収集先がメーカー15社固定 → 新興・地方ブランドを取りこぼす | PR TIMES 全社フィードを主ソース化。15社は保険に降格 |
+| キーワードが `"アイス"` のみでアイスコーヒー等を誤検出 | 強い語／弱い語＋文脈語／除外語の3層フィルタ |
+| Claude を2回呼び、片方失敗で状態が不整合 | 1記事1回。tool_choice で形式固定 |
+| 15分ギャップが同一実行内で効き、実質1実行1投稿 | 投稿待ちキュー（ready）を新設。判定済みの記事を再判定しない |
+| 発売日が近い順に投稿 → 出たての速報が後回し | 配信が新しい順に処理 |
+| cron 設定が vercel.json と外部cronで二重管理 | Vercel cron に一本化（Proプランなので10分おき可） |
+| 1日20件（X Free枠の17件/24hを超過） | 既定12件。環境変数で調整可 |
+| cron 二重配信での重複投稿リスク | 実行ロック＋記事単位の投稿権で排他 |
+| コンビニ4社スクレイピング等で機能が膨張 | PR TIMES 専用に一本化 |
 
-### 1. X Developer Account の申請
+---
 
-1. https://developer.x.com/en/portal/petition/essential/basic-info にアクセス
-2. 開発者アカウントを申請（利用目的は「Bot / Automated posting」を選択）
-3. 承認後、ダッシュボードで新しいAppを作成
-4. **User authentication settings** で以下を設定:
-   - App permissions: **Read and Write**
-   - Type of App: **Web App**
-   - Callback URL: `https://your-app.vercel.app/api/callback`（仮でOK）
-5. **Keys and Tokens** タブから以下を取得:
-   - API Key / API Key Secret
-   - Access Token / Access Token Secret（**Read and Write権限で再生成**すること）
+## 3. エンドポイント
 
-### 2. Anthropic API Key の取得
+すべて `Authorization: Bearer <CRON_SECRET>` が必要。
 
-1. https://console.anthropic.com/ にアクセス
-2. API Keyを新規作成
+| パス | 用途 |
+|---|---|
+| `GET /api/scan` | 本処理。収集→判定→照合→投稿。cron が叩く |
+| `GET /api/scan?dry=1` | 投稿せず、何が起きるかだけ返す |
+| `GET /api/scan?deep=1` | 企業別フィードも併せて舐める（取りこぼし回収） |
+| `GET /api/selftest` | RSS・Redis・Claude・X認証の疎通診断 |
+| `GET /api/selftest?media=1` | 上記に加え、画像アップロードも実際に試す |
+| `GET /admin` | 承認待ちの確認・編集・投稿・却下（ブラウザ） |
 
-### 3. Vercelへのデプロイ
+### 動作確認のしかた
 
 ```bash
-# リポジトリをGitHubにプッシュ
-git init
-git add .
-git commit -m "initial commit"
-gh repo create ice-cream-bot --private --push
+BASE=https://<your-app>.vercel.app
+SECRET=<CRON_SECRET>
 
-# Vercelにデプロイ
-npx vercel
+# まず疎通診断（ここが全部 ok にならないと先に進まない）
+curl -s -H "Authorization: Bearer $SECRET" "$BASE/api/selftest?media=1" | jq
 
-# Vercel KVを追加（ダッシュボードから）
-# Storage → KV → Create → ice-cream-bot-kv
+# 投稿せずに挙動確認
+curl -s -H "Authorization: Bearer $SECRET" "$BASE/api/scan?dry=1" | jq
 ```
 
-### 4. 環境変数の設定
+---
 
-Vercelダッシュボード → Settings → Environment Variables に以下を追加:
+## 4. スケジュール
 
-```
-X_API_KEY=（手順1で取得）
-X_API_SECRET=（手順1で取得）
-X_ACCESS_TOKEN=（手順1で取得）
-X_ACCESS_TOKEN_SECRET=（手順1で取得）
-ANTHROPIC_API_KEY=（手順2で取得）
-CRON_SECRET=（任意のランダム文字列。openssl rand -hex 32 で生成可）
-ADMIN_SECRET=（/admin ログイン用パスワード。未設定の場合は CRON_SECRET が代わりに使われる）
-```
+`vercel.json` で Vercel cron を2本登録している（Pro プランのため分単位で可）。
 
-### 5. 動作確認
+| スケジュール(UTC) | 内容 |
+|---|---|
+| `*/10 * * * *` | 通常スキャン。PR TIMES 全社フィードのみ |
+| `21 * * * *` | 毎時1回、企業別フィードも併せて舐める |
 
-```bash
-# ローカルで動作確認する場合
-cp .env.example .env.local
-# .env.local に実際のキーを記入
-npm install
-npm run dev
+全社フィードは約2時間分を保持するので、10分間隔なら約12倍の安全余裕がある。
+Vercel は `CRON_SECRET` を Authorization ヘッダに自動付与するため、外部cronは不要。
 
-# Cronエンドポイントをテスト
-curl -H "Authorization: Bearer YOUR_CRON_SECRET" http://localhost:3000/api/cron
-```
+---
 
-## ファイル構成
+## 5. 環境変数
 
-```
-src/
-├── app/
-│   ├── api/cron/route.ts   # Cronジョブのエントリポイント
-│   ├── layout.tsx           # レイアウト
-│   └── page.tsx             # トップページ（ステータス表示）
-└── lib/
-    ├── rss.ts               # PR TIMES RSS取得・パース
-    ├── comment.ts           # Claude APIで投稿文生成
-    ├── x-client.ts          # X API投稿（OAuth 1.0a自前実装）
-    └── store.ts             # Vercel KVで重複管理
-```
+`.env.example` を参照。必須は8つ。
 
-## カスタマイズ
+| 変数 | 用途 |
+|---|---|
+| `X_API_KEY` / `X_API_SECRET` | X アプリの鍵 |
+| `X_ACCESS_TOKEN` / `X_ACCESS_TOKEN_SECRET` | **Read and Write 権限にしてから再生成したもの** |
+| `ANTHROPIC_API_KEY` | Claude |
+| `KV_REST_API_URL` / `KV_REST_API_TOKEN` | Upstash Redis |
+| `CRON_SECRET` | cron と API の認証 |
+| `ADMIN_SECRET` | 管理画面のパスワード（任意。未設定なら CRON_SECRET を代用） |
 
-- **検索キーワード**: `src/lib/rss.ts` の `KEYWORDS` 配列を編集
-- **投稿スタイル**: `src/lib/comment.ts` のプロンプトを編集
-- **Cron間隔**: `vercel.json` の `schedule` を変更（現在は3時間ごと）
-- **1回あたりの投稿上限**: `src/app/api/cron/route.ts` の `MAX_POSTS_PER_RUN` を変更
+---
+
+## 6. 調整したくなったら
+
+| 変えたいこと | 場所 |
+|---|---|
+| 拾う語・除外する語 | `src/lib/filter.ts` |
+| 投稿の文体・締めのひと言 | `src/lib/classify.ts` の `CLOSINGS` とプロンプト |
+| 照合の厳しさ（自動投稿の条件） | `src/lib/verify.ts` |
+| 投稿頻度・上限・鮮度 | `src/lib/config.ts`（多くは環境変数でも上書き可） |
+| 保険で見る企業フィード | `src/lib/config.ts` の `COMPANY_FEEDS` |
+
+**自動投稿の割合を上げたい**ときは `verify.ts` の警告を減らす方向で調整する。
+ただし警告を消すほど誤情報が世に出る確率は上がるので、
+「承認待ちが多すぎて回らない」と感じるまでは緩めないこと。
+
+---
+
+## 7. 月額コスト目安
+
+| サービス | 費用 |
+|---|---|
+| Vercel Pro | 契約済み（既存） |
+| Upstash Redis | 無料枠内の想定 |
+| X API | 現行プラン |
+| Claude (Haiku) | 事前フィルタ通過分のみ課金。想定 数十円〜数百円／月 |

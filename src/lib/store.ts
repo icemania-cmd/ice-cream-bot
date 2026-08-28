@@ -23,7 +23,6 @@ export const redis = new Redis({
 });
 
 const K = {
-  seen: "v2:seen",
   posted: "v2:posted",
   review: "v2:review",
   ready: "v2:ready",
@@ -57,55 +56,51 @@ function parse<T>(raw: unknown): T | null {
 
 // ===== 既知判定 =====
 
-export type KnownState =
-  | "new"
-  | "seen"
-  | "posted"
-  | "review"
-  | "ready"
-  | "rejected";
-
 /**
- * 記事群の状態をまとめて判定する。
- * 1記事1往復ではなくパイプラインで1往復にまとめるのが肝。
+ * 処理済み記事の記録。
+ *
+ * ここは1日144回×150件の判定が走る場所なので、コマンド数を最小化する必要がある。
+ * Upstash は「1コマンド＝1課金」なので、1件ずつ問い合わせると
+ * 月間で数十万コマンドに達してしまう。
+ * SET と SMISMEMBER を使い、150件の判定を **1コマンド** で済ませる。
+ *
+ * SET は期限で刈れないため月ごとにキーを分け、TTL で自然に消えるようにする。
+ * 判定は「今月」と「先月」の2本だけ見れば足りる（記事の鮮度上限は数日）。
  */
-export async function classifyKnown(
-  guids: string[]
-): Promise<Map<string, KnownState>> {
-  const result = new Map<string, KnownState>();
-  if (guids.length === 0) return result;
+const HANDLED_TTL_SECONDS = TTL_SEEN_DAYS * 86400;
 
-  const pipe = redis.pipeline();
-  for (const g of guids) {
-    pipe.zscore(K.posted, g);
-    pipe.zscore(K.review, g);
-    pipe.zscore(K.ready, g);
-    pipe.zscore(K.rejected, g);
-    pipe.zscore(K.seen, g);
-  }
-  const scores = (await pipe.exec()) as (number | null)[];
-
-  guids.forEach((g, i) => {
-    const [posted, review, ready, rejected, seen] = scores.slice(i * 5, i * 5 + 5);
-    if (posted != null) result.set(g, "posted");
-    else if (review != null) result.set(g, "review");
-    else if (ready != null) result.set(g, "ready");
-    else if (rejected != null) result.set(g, "rejected");
-    else if (seen != null) result.set(g, "seen");
-    else result.set(g, "new");
-  });
-  return result;
+function handledKey(monthsAgo = 0): string {
+  const d = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  d.setUTCMonth(d.getUTCMonth() - monthsAgo);
+  return `v2:handled:${d.toISOString().slice(0, 7)}`;
 }
 
 /**
- * 「見た」記録。
- * 判定に失敗した記事を無限に再処理しないためのもので、投稿済みとは区別する。
+ * まだ手を付けていない記事だけを返す。
+ * 消費コマンドは常に2（今月分・先月分の SMISMEMBER）。
  */
-export async function markSeen(guids: string[]): Promise<void> {
+export async function filterUnhandled(guids: string[]): Promise<string[]> {
+  if (guids.length === 0) return [];
+  const [cur, prev] = (await redis
+    .pipeline()
+    .smismember(handledKey(0), guids)
+    .smismember(handledKey(1), guids)
+    .exec()) as [(0 | 1)[], (0 | 1)[]];
+
+  return guids.filter((_, i) => !cur?.[i] && !prev?.[i]);
+}
+
+/**
+ * 「もう触らない」印を付ける。
+ * 対象外と判定した記事・投稿した記事・キューに入れた記事すべてに付ける。
+ * 消費コマンドは2（SADD と EXPIRE）。
+ */
+export async function markHandled(guids: string[]): Promise<void> {
   if (guids.length === 0) return;
-  const now = Date.now();
+  const key = handledKey(0);
   const pipe = redis.pipeline();
-  for (const g of guids) pipe.zadd(K.seen, { score: now, member: g });
+  pipe.sadd(key, guids[0], ...guids.slice(1));
+  pipe.expire(key, HANDLED_TTL_SECONDS);
   await pipe.exec();
 }
 
@@ -124,13 +119,16 @@ export async function markPosted(
   const now = Date.now();
   const pipe = redis.pipeline();
   pipe.zadd(K.posted, { score: now, member: guid });
-  pipe.set(K.postItem(guid), JSON.stringify({ ...data, postedAt: new Date().toISOString() }), {
-    ex: TTL_POSTED_DAYS * 86400,
-  });
+  pipe.set(
+    K.postItem(guid),
+    JSON.stringify({ ...data, postedAt: new Date().toISOString() }),
+    { ex: TTL_POSTED_DAYS * 86400 }
+  );
   pipe.zrem(K.review, guid);
   pipe.zrem(K.ready, guid);
   pipe.del(`v2:review:${guid}`);
   pipe.del(`v2:ready:${guid}`);
+  pipe.sadd(handledKey(0), guid);
   await pipe.exec();
 }
 
@@ -173,6 +171,7 @@ export async function enqueue(q: QueueName, item: QueuedItem): Promise<void> {
   const pipe = redis.pipeline();
   pipe.zadd(queueKey(q), { score: Date.now(), member: item.guid });
   pipe.set(queueItemKey(q, item.guid), JSON.stringify(item), { ex: ttl });
+  pipe.sadd(handledKey(0), item.guid);
   await pipe.exec();
 }
 
@@ -222,6 +221,7 @@ export async function reject(guid: string): Promise<void> {
   pipe.zrem(queueKey("ready"), guid);
   pipe.del(queueItemKey("review", guid));
   pipe.del(queueItemKey("ready", guid));
+  pipe.sadd(handledKey(0), guid);
   await pipe.exec();
 }
 
@@ -345,7 +345,6 @@ export async function listPosted(limit = 20): Promise<PostedSummary[]> {
 export async function pruneOldEntries(): Promise<void> {
   const now = Date.now();
   const pipe = redis.pipeline();
-  pipe.zremrangebyscore(K.seen, 0, now - TTL_SEEN_DAYS * DAY);
   pipe.zremrangebyscore(K.posted, 0, now - TTL_POSTED_DAYS * DAY);
   pipe.zremrangebyscore(K.rejected, 0, now - TTL_POSTED_DAYS * DAY);
   pipe.zremrangebyscore(K.review, 0, now - TTL_REVIEW_DAYS * DAY);

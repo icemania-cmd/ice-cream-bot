@@ -13,14 +13,13 @@ import {
   acquireRunLock,
   appendRunLog,
   claimForPost,
-  classifyKnown,
-  dequeue,
   enqueue,
+  filterUnhandled,
   getRateStatus,
   jstDateString,
   listQueue,
+  markHandled,
   markPosted,
-  markSeen,
   pruneOldEntries,
   queueSize,
   recordPost,
@@ -81,12 +80,6 @@ export async function GET(request: NextRequest) {
       log.notes.push(rate.reason || "投稿枠なし");
       return false;
     }
-    if (dryRun) {
-      details.push({ guid: item.guid, action: "dry-run:投稿予定", text: item.text });
-      log.notes.push(`dry-run のため投稿せず: ${item.title}`);
-      return false;
-    }
-
     // cron の二重配信・同時実行に備えて記事単位の投稿権を取る
     if (!(await claimForPost(item.guid))) {
       log.notes.push(`他の実行が処理中のためスキップ: ${item.title}`);
@@ -126,8 +119,8 @@ export async function GET(request: NextRequest) {
       releaseDate: item.releaseDate,
       route: "auto",
     });
+    // markPosted が ready/review からの削除も済ませているので dequeue は不要
     await recordPost();
-    await dequeue("ready", item.guid);
     postsThisRun++;
     log.posted++;
     details.push({
@@ -150,9 +143,22 @@ export async function GET(request: NextRequest) {
   try {
     // ---- 1. 投稿待ちキューを先に捌く（古い順＝速報性優先）----
     const ready = await listQueue("ready", 20);
-    for (const item of ready) {
-      if (postsThisRun >= MAX_POSTS_PER_RUN) break;
-      await publish(item);
+    if (dryRun) {
+      for (const item of ready) {
+        details.push({
+          guid: item.guid,
+          title: item.title,
+          action: "dry-run:投稿待ち（次の実行で投稿される）",
+          text: item.text,
+        });
+      }
+    } else {
+      for (const item of ready) {
+        if (postsThisRun >= MAX_POSTS_PER_RUN) break;
+        const done = await publish(item);
+        // 投稿枠が無いなら以降を試しても同じ結果なので打ち切る
+        if (!done && (await getRateStatus()).canPost === false) break;
+      }
     }
 
     // ---- 2. 収集 ----
@@ -173,9 +179,9 @@ export async function GET(request: NextRequest) {
       return Number.isFinite(t) ? t >= cutoff : true;
     });
 
-    // ---- 3. 既知判定（1往復）----
-    const known = await classifyKnown(fresh.map((r) => r.guid));
-    const unknown = fresh.filter((r) => known.get(r.guid) === "new");
+    // ---- 3. 既知判定（SMISMEMBER 2コマンドで全件判定）----
+    const unhandled = new Set(await filterUnhandled(fresh.map((r) => r.guid)));
+    const unknown = fresh.filter((r) => unhandled.has(r.guid));
     log.newCount = unknown.length;
 
     // ---- 4. 無料の事前フィルタ ----
@@ -188,8 +194,8 @@ export async function GET(request: NextRequest) {
     }
     log.candidates = candidates.length;
     log.skipped = rejectedGuids.length;
-    // 落としたものは「見た」印を付けて二度と処理しない
-    if (rejectedGuids.length > 0) await markSeen(rejectedGuids);
+    // 落としたものは印を付けて二度と処理しない（dry-run では状態を汚さない）
+    if (!dryRun && rejectedGuids.length > 0) await markHandled(rejectedGuids);
 
     // 新しい順に、1回の上限まで
     candidates.sort(
@@ -214,7 +220,7 @@ export async function GET(request: NextRequest) {
         log.classified++;
 
         if (!extraction.is_ice_cream_new_product) {
-          await markSeen([release.guid]);
+          if (!dryRun) await markHandled([release.guid]);
           details.push({
             guid: release.guid,
             title: release.title,
@@ -232,7 +238,8 @@ export async function GET(request: NextRequest) {
           link: release.link,
           corp: release.corp,
           publishedAt: release.publishedAt,
-          imageUrl: detail?.ogImage || release.imageUrl,
+          // RSS の [画像1:] はリリース本体の主画像。og:image は汎用バナーのことがある
+          imageUrl: release.imageUrl || detail?.ogImage,
           releaseDate: extraction.release_date,
           productName: extraction.product_name,
           maker: extraction.maker,
@@ -241,9 +248,21 @@ export async function GET(request: NextRequest) {
           text: check.text,
           blocking: check.blocking,
           warnings: check.warnings,
-          sourceExcerpt: sourceText.slice(0, 2500),
+          sourceExcerpt: sourceText.slice(0, 4000),
           createdAt: new Date().toISOString(),
         };
+
+        if (dryRun) {
+          details.push({
+            guid: release.guid,
+            title: release.title,
+            action: check.autoPostable ? "dry-run:自動投稿の対象" : "dry-run:承認待ちの対象",
+            text: check.text,
+            blocking: check.blocking,
+            warnings: check.warnings,
+          });
+          continue;
+        }
 
         if (check.autoPostable) {
           if (postsThisRun < MAX_POSTS_PER_RUN) {
@@ -279,7 +298,8 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    await pruneOldEntries();
+    // 掃除は毎回やる必要がない。Upstash のコマンド数を抑えるため毎時1回に留める。
+    if (deep && !dryRun) await pruneOldEntries();
   } catch (e) {
     log.errors.push(e instanceof Error ? e.message : String(e));
   } finally {
@@ -287,7 +307,7 @@ export async function GET(request: NextRequest) {
   }
 
   log.durationMs = Date.now() - startedAt;
-  await appendRunLog(log).catch(() => undefined);
+  if (!dryRun) await appendRunLog(log).catch(() => undefined);
 
   const [readyCount, reviewCount] = await Promise.all([
     queueSize("ready").catch(() => -1),

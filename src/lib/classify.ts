@@ -35,7 +35,8 @@ const REPORT_TOOL: Anthropic.Tool = {
       reason: { type: "string", description: "その判定にした理由を一文で" },
       product_name: {
         type: "string",
-        description: "商品名。原文の表記をそのまま。不明なら空文字",
+        description:
+          "商品名。原文の表記をそのまま。ただし商品名を囲む『』「」は含めない（例: 『黒ごま＆きなこ』→ 黒ごま＆きなこ）。不明なら空文字",
       },
       maker: {
         type: "string",

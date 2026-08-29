@@ -26,20 +26,41 @@ export interface VerifyResult {
   weight: number;
 }
 
-/** 全角英数字・記号を半角に寄せ、空白を落として照合の取りこぼしを防ぐ */
+/**
+ * 照合用の正規化。
+ *
+ * 表記ゆれで「一致しない」と誤判定すると、正しい投稿まで承認待ちに回って
+ * 自動投稿が実質機能しなくなる。日本語のプレスリリースは商品名を
+ * 『』「」で囲むのが普通で、投稿文では外れることが多いため、
+ * 引用符・かぎ括弧は両側から取り除いたうえで比較する。
+ */
 function normalize(s: string): string {
-  return s
-    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
-    .replace(/[Ａ-Ｚａ-ｚ]/g, (c) =>
-      String.fromCharCode(c.charCodeAt(0) - 0xfee0)
-    )
-    .replace(/[，、]/g, ",")
-    .replace(/[／]/g, "/")
-    .replace(/[（(]/g, "(")
-    .replace(/[）)]/g, ")")
-    .replace(/[〜～]/g, "~")
-    .replace(/[＃]/g, "#")
-    .replace(/\s+/g, "");
+  return (
+    s
+      // 全角英数字 → 半角
+      .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+      .replace(/[Ａ-Ｚａ-ｚ]/g, (c) =>
+        String.fromCharCode(c.charCodeAt(0) - 0xfee0)
+      )
+      // 全角記号 → 半角
+      .replace(/[，、]/g, ",")
+      .replace(/[／]/g, "/")
+      .replace(/[（(]/g, "(")
+      .replace(/[）)]/g, ")")
+      .replace(/[〜～]/g, "~")
+      .replace(/[＃]/g, "#")
+      .replace(/[＆]/g, "&")
+      .replace(/[％]/g, "%")
+      .replace(/[＋]/g, "+")
+      .replace(/[－ー―‐−]/g, "-")
+      .replace(/[！]/g, "!")
+      .replace(/[？]/g, "?")
+      .replace(/[：]/g, ":")
+      // 引用符・かぎ括弧・中黒は取り除く（商品名の囲み方が一定しないため）
+      .replace(/[「」『』“”‘’"'【】〈〉《》〔〕\[\]・･]/g, "")
+      // 空白は全部落とす
+      .replace(/\s+/g, "")
+  );
 }
 
 /** X の文字数カウント近似（全角2・半角1）。URLは含めない前提。 */

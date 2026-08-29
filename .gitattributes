@@ -1,0 +1,20 @@
+# このリポジトリはリポジトリ内・作業ツリーともに改行を LF で統一する。
+#
+# Windows の core.autocrlf=true が有効だと、ファイルを触るたびに全行が
+# CRLF に置き換わってコミットされ、「1行直しただけなのに4,000行の差分」に
+# なる。誰がどこを変えたか追えなくなるうえ、Mac/Linux/Web から触るたびに
+# 同じことが往復するため、ここでルールを固定する。
+#
+# eol=lf を明示しているので、この設定は各自の core.autocrlf より優先される。
+* text=auto eol=lf
+
+# バイナリは変換対象外
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary

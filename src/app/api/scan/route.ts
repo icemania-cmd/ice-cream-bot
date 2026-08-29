@@ -326,6 +326,18 @@ export async function GET(request: NextRequest) {
   }
 
   log.durationMs = Date.now() - startedAt;
+
+  // Vercel のログに1行で要約を出す。
+  // 管理画面を開かなくても「今回何が起きたか」が分かる状態を保つため。
+  console.log(
+    `[scan:${log.mode}] 取得${log.fetched} 新規${log.newCount} 候補${log.candidates} ` +
+      `判定${log.classified} 投稿${log.posted} キュー${log.queued} ` +
+      `除外${log.skipped} ${(log.durationMs / 1000).toFixed(1)}秒`
+  );
+  for (const n of log.notes) console.log(`[scan] 備考: ${n}`);
+  for (const e of log.errors) console.error(`[scan] エラー: ${e}`);
+  for (const d of details) console.log(`[scan] ${JSON.stringify(d)}`);
+
   if (!dryRun) await appendRunLog(log).catch(() => undefined);
 
   const [readyCount, reviewCount] = await Promise.all([

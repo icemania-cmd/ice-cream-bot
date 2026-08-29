@@ -66,6 +66,7 @@ PR TIMES 全社RSS (index.rdf)      ← 10分おき
 | `GET /api/scan` | 本処理。収集→判定→照合→投稿。cron が叩く |
 | `GET /api/scan?dry=1` | 投稿せず、何が起きるかだけ返す |
 | `GET /api/scan?deep=1` | 企業別フィードも併せて舐める（取りこぼし回収） |
+| `GET /api/try?url=<記事URL>` | 記事1本を指定して判定・投稿文生成・照合だけを試す（投稿しない） |
 | `GET /api/selftest` | RSS・Redis・Claude・X認証の疎通診断 |
 | `GET /api/selftest?media=1` | 上記に加え、画像アップロードも実際に試す |
 | `GET /admin` | 承認待ちの確認・編集・投稿・却下（ブラウザ） |
@@ -81,7 +82,15 @@ curl -s -H "Authorization: Bearer $SECRET" "$BASE/api/selftest?media=1" | jq
 
 # 投稿せずに挙動確認
 curl -s -H "Authorization: Bearer $SECRET" "$BASE/api/scan?dry=1" | jq
+
+# 特定の記事1本で、投稿文がどう作られ、自動投稿されるか承認待ちになるかを見る
+curl -s -H "Authorization: Bearer $SECRET" \
+  "$BASE/api/try?url=https://prtimes.jp/main/html/rd/p/000000091.000068877.html" | jq
 ```
+
+アイスの新商品は1日に数件しか配信されないため、cron を眺めていても
+何時間も何も起きないことがある。フィルタや文体を調整したいときは
+`/api/try` に過去の記事URLを渡して即座に結果を見るのが早い。
 
 ---
 

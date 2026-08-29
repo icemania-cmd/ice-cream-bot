@@ -28,6 +28,10 @@ export interface ReleaseDetail {
   bodyText: string;
   /** og:image（RSS の画像より高解像度なことが多い） */
   ogImage?: string;
+  /** og:title（記事URLだけを指定して試すときの表題） */
+  ogTitle?: string;
+  /** og:site_name や本文から拾えた配信企業名 */
+  ogSiteName?: string;
 }
 
 // ===== 低レベルユーティリティ =====
@@ -280,6 +284,8 @@ export async function fetchReleaseDetail(
     const html = res.text;
 
     const ogImage = metaContent(html, "og:image");
+    const ogTitle = metaContent(html, "og:title");
+    const ogSiteName = metaContent(html, "og:site_name");
 
     // 本文らしき領域を優先的に切り出し、取れなければ全体から抜く
     const main =
@@ -296,8 +302,8 @@ export async function fetchReleaseDetail(
       .trim()
       .slice(0, 8000);
 
-    if (bodyText.length < 50) return { bodyText: "", ogImage };
-    return { bodyText, ogImage };
+    if (bodyText.length < 50) return { bodyText: "", ogImage, ogTitle, ogSiteName };
+    return { bodyText, ogImage, ogTitle, ogSiteName };
   } catch {
     return null;
   }

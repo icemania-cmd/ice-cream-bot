@@ -69,14 +69,23 @@ export const ALLOW_DAYS_AFTER_RELEASE = 0;
 
 // ===== 投稿の体裁 =====
 
-export const POST_PREFIX = "【新商品】";
-/** X の重み付き文字数上限（全角2・半角1）。280 が Free/Basic の上限。 */
-export const MAX_TWEET_WEIGHT = 280;
+/**
+ * 投稿の冒頭表記。
+ * 新商品だけでなく復活・再販・定番昇格も扱うため「新商品」では実態に合わない。
+ */
+export const POST_PREFIX = "【発売情報】";
+/**
+ * X の重み付き文字数上限（全角2・半角1）。280 が通常アカウントの上限。
+ * X Premium の長文投稿を使う場合は環境変数で引き上げる。
+ */
+export const MAX_TWEET_WEIGHT = Number(process.env.MAX_TWEET_WEIGHT || 280);
 /**
  * 生成時に狙う長さ。上限ぎりぎりを狙わせると超過して投稿不可になるため、
  * 余裕を持たせる。日本語で概ね100〜110文字。
  */
-export const TARGET_TWEET_WEIGHT = 220;
+export const TARGET_TWEET_WEIGHT = Number(
+  process.env.TARGET_TWEET_WEIGHT || 230
+);
 
 /** X の文字数カウント近似（全角2・半角1）。URLは含めない前提。 */
 export function tweetWeight(text: string): number {

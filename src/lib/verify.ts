@@ -287,7 +287,6 @@ function regionOccurrences(text: string): Occurrence<string>[] {
 // 販売チャネルの主張。原文に裏が取れないと事故になる語。
 const CHANNEL_CLAIMS = [
   "先行",
-  "限定",
   "セブン",
   "ローソン",
   "ファミリーマート",
@@ -295,10 +294,22 @@ const CHANNEL_CLAIMS = [
   "ミニストップ",
   "ドラッグストア",
 ];
+
+/**
+ * 「限定」は「期間限定」「数量限定」の形でほぼ全てのリリースに出てくる。
+ * 商品名との近接まで求めると誤警告が増えるだけなので、原文にあるかだけ見る。
+ * 「セブン‐イレブン限定」のような取り違えは店舗名側の判定で捕まえる。
+ */
+const LOOSE_CLAIMS = ["限定"];
 // 「コンビニ」「スーパー」は締めのひと言（例: コンビニ寄らなきゃ）に出るため対象外
 
+/**
+ * 絵文字の判定。
+ * 矢印（→ ⇒ など U+2190〜U+21FF）は文章の記号として使うので除外する。
+ * アイスマン福留の文体では「濃厚生キャラメル → 8/31(月)発売」のように用いる。
+ */
 const EMOJI_RE =
-  /[\u{00A9}\u{00AE}\u{203C}\u{2049}\u{2122}\u{2139}\u{2190}-\u{21FF}\u{2300}-\u{23FF}\u{2500}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1FAFF}\u{FE0F}\u{20E3}]/u;
+  /[\u{00A9}\u{00AE}\u{203C}\u{2049}\u{2122}\u{2139}\u{2300}-\u{23FF}\u{2500}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1FAFF}\u{FE0F}\u{20E3}]/u;
 const URL_RE = /(https?:\/\/|www\.|[a-z0-9-]+\.(?:jp|com|net|co\.jp)\b)/i;
 
 export function verifyPost(params: {
@@ -479,6 +490,11 @@ export function verifyPost(params: {
   }
 
   // 8. 販売チャネルの主張
+  for (const claim of LOOSE_CLAIMS) {
+    if (ntext.includes(claim) && !src.includes(claim)) {
+      warnings.push(`「${claim}」という表現が原文にありません`);
+    }
+  }
   for (const claim of CHANNEL_CLAIMS) {
     if (!ntext.includes(claim)) continue;
     if (!nearProduct(src, product, claim)) {

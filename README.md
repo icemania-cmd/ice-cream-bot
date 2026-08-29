@@ -128,9 +128,11 @@ Vercel は `CRON_SECRET` を Authorization ヘッダに自動付与するため�
 | 変えたいこと | 場所 |
 |---|---|
 | 拾う語・除外する語 | `src/lib/filter.ts` |
-| 投稿の文体・締めのひと言 | `src/lib/classify.ts` の `CLOSINGS` とプロンプト |
+| 投稿の文体・締めのひと言 | `src/lib/classify.ts` の `CLOSING_PATTERNS` とプロンプト |
 | 照合の厳しさ（自動投稿の条件） | `src/lib/verify.ts` |
 | 投稿頻度・上限・鮮度 | `src/lib/config.ts`（多くは環境変数でも上書き可） |
+| 投稿の長さ | `TARGET_TWEET_WEIGHT`（既定230）。X Premium の長文投稿を使うなら `MAX_TWEET_WEIGHT` も環境変数で引き上げる |
+| 冒頭の表記 | `POST_PREFIX`（既定「【発売情報】」） |
 | 保険で見る企業フィード | `src/lib/config.ts` の `COMPANY_FEEDS` |
 
 **自動投稿の割合を上げたい**ときは `verify.ts` の警告を減らす方向で調整する。

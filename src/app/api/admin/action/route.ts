@@ -6,6 +6,7 @@ import { postTweet, uploadMedia } from "@/lib/x";
 import {
   claimForPost,
   dequeue,
+  findSimilarPostedProduct,
   getQueued,
   markPosted,
   recordPost,
@@ -80,6 +81,23 @@ export async function POST(request: NextRequest) {
         { error: "本文にURLが含まれています" },
         { status: 400 }
       );
+    }
+
+    // 同じ商品を既に投稿していないか。
+    // 承認待ちに入れた時点では未投稿でも、その後に別記事（コラボ相手の
+    // リリースなど）が自動投稿されていることがある。人が押した操作を
+    // 機械が握り潰さないよう、止めずに確認を求める形にする。
+    if (body.confirmDuplicate !== true) {
+      const twin = await findSimilarPostedProduct(item.productName);
+      if (twin) {
+        return NextResponse.json(
+          {
+            needsConfirm: true,
+            error: `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）。それでも投稿しますか？`,
+          },
+          { status: 409 }
+        );
+      }
     }
 
     // 承認ボタンと cron の /api/scan が同じ記事を同時に掴みうる。

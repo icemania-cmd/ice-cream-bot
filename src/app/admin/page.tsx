@@ -136,11 +136,14 @@ export default function AdminPage() {
     item: QueuedItem,
     queue: "review" | "ready",
     action: "approve" | "reject",
-    text?: string
+    text?: string,
+    confirmDuplicate = false
   ) {
-    if (action === "reject" && !confirm(`却下します:\n${item.title}`)) return;
-    if (action === "approve" && !confirm(`このままXへ投稿します:\n\n${text}`))
-      return;
+    if (!confirmDuplicate) {
+      if (action === "reject" && !confirm(`却下します:\n${item.title}`)) return;
+      if (action === "approve" && !confirm(`このままXへ投稿します:\n\n${text}`))
+        return;
+    }
 
     setLoading(true);
     setMessage("");
@@ -151,9 +154,27 @@ export default function AdminPage() {
           "Content-Type": "application/json",
           "x-admin-secret": secret,
         },
-        body: JSON.stringify({ guid: item.guid, queue, action, text }),
+        body: JSON.stringify({
+          guid: item.guid,
+          queue,
+          action,
+          text,
+          confirmDuplicate,
+        }),
       });
       const json = await res.json();
+
+      // 同じ商品を投稿済みの可能性。押した操作を握り潰さず、確認したうえで通す
+      if (res.status === 409 && json.needsConfirm) {
+        setLoading(false);
+        if (confirm(json.error)) {
+          await act(item, queue, action, text, true);
+        } else {
+          setMessage("投稿を取りやめました");
+        }
+        return;
+      }
+
       setMessage(res.ok ? `✅ ${json.action} ${json.imageNote || ""}` : `❌ ${json.error}`);
       await load(secret);
     } catch (e) {

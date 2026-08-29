@@ -5,89 +5,55 @@
 
 ---
 
-## いまの状態（2026-08-28 時点）
+## いまの状態（2026-08-29 時点）
 
-**コードは完成してテスト済み。本番切り替えの手前で止まっている。**
+**v2 が本番で稼働中。ただし投稿は止めてある。**
 
-| ブランチ | 中身 | GitHub |
-|---|---|---|
-| `main` | 旧v1（承認制ワークフロー版）。動いていない | push済み |
-| `renewal/v2` | **新v2。これが完成品** | push済み（一部未push） |
-| `backup/pre-renewal-20260828` | リニューアル前の作業ツリー退避 | push済み |
+- `main` = v2。Vercel 本番にデプロイ済み。10分おきの cron が正常動作
+- `MAX_DAILY_POSTS=0` を設定しているため、**判定・照合まで実行してキューに溜めるだけ**。X には1件も投稿しない
+- 旧 v1 は `backup/pre-renewal-20260828` ブランチに退避済み
 
-`renewal/v2` にはローカルのみのコミットが残っている可能性がある。
-`git log origin/renewal/v2..renewal/v2` で確認すること。
+### 解決済み（旧botが動かなかった原因）
 
----
+**Upstash Redis のデータベースが消滅していた。** cron が24時間で8回とも
+`getaddrinfo ENOTFOUND direct-lemur-82033.upstash.io` で500終了していた。
+コードの問題ではなかった。新しい Upstash（`upstash-kv-charcoal-ladder`）を
+作成して接続済み。
 
-## 🔴 最重要：投稿されなかった本当の理由
+### 実機で検証済みの項目
 
-コードのバグではなかった。**Upstash Redis のデータベースが消滅していた。**
+| 項目 | 状態 |
+|---|---|
+| Upstash Redis 読み書き | ✅ |
+| PR TIMES 全社フィード取得・重複排除 | ✅ 200件取得→新規5件を0.4秒 |
+| Claude 判定・投稿文生成 | ✅ 実記事4本で確認 |
+| 事実照合（自動投稿の可否） | ✅ 正しい記事は通し、捏造は弾く |
+| X 認証 | ✅ @icemania |
+| X 画像アップロード（v2 エンドポイント） | ✅ 実際に media_id 取得 |
 
-Vercel の本番ログ（2026-08-28 調査）で、cron が24時間に8回動いて
-8回とも 500 で落ちていた。エラーは毎回これ:
+X Premium でも **API 経由では280文字（重み）の制限が残る**ため、
+`MAX_TWEET_WEIGHT` は 280 のまま（環境変数で変更可）。
 
-```
-Cronジョブエラー: [TypeError: fetch failed]
-  cause: Error: getaddrinfo ENOTFOUND direct-lemur-82033.upstash.io
-```
+## 次にやること
 
-`.env.local` の `KV_REST_API_URL` が指す `direct-lemur-82033.upstash.io` は
-DNS で解決できない。Upstash 側で削除されたか、無料枠の非アクティブ回収で消えた。
+### ① 溜まった投稿待ちを確認する
 
-毎回「PR TIMES から444件取得 → Redis に問い合わせ → 名前解決失敗 → 500」を
-繰り返していただけ。承認制に切り替えても下書きが1件も出なかったのも同じ理由。
+https://ice-cream-bot.vercel.app/admin を開き（パスワードは `ADMIN_SECRET`）、
+「投稿待ち」タブに実際のアイス記事が2〜3件溜まっているか見る。
+文章と事実が問題なければ次へ。
 
-**Redis を作り直さない限り、v2 でも同じように動かない。**
-（ただし v2 は `/api/selftest` が原因を名指しで報告する）
+### ② 投稿をONにする
 
----
+Vercel → ice-cream-bot → Settings → Environment Variables で
+`MAX_DAILY_POSTS` を `0` → `12` に変更し、**Redeploy する**
+（環境変数はデプロイ時に取り込まれるため、変更だけでは反映されない）。
 
-## 次にやること（この順番で）
+溜まっていた分から順に自動投稿が始まる。
 
-### ① Upstash Redis を作り直す ← 必須
+### ③ 最初の数件を見る
 
-Vercel ダッシュボード → プロジェクト `ice-cream-bot` → **Storage** タブ
-→ **Create Database** → **Upstash (Redis)** → 作成 → **Connect Project**
-
-リージョンは Tokyo (ap-northeast-1) 推奨。
-`KV_REST_API_URL` / `KV_REST_API_TOKEN` が自動注入される。
-v2 は `UPSTASH_REDIS_REST_URL` / `_TOKEN` の名前でも動くようにしてある。
-
-### ② 環境変数を追加（Vercel → Settings → Environment Variables → Production）
-
-| 変数 | 値 | 理由 |
-|---|---|---|
-| `ADMIN_SECRET` | 任意のパスワード | /admin 用。CRON_SECRET と分ける |
-| `MAX_DAILY_POSTS` | **`0`** | 初回は投稿ゼロで様子を見る安全弁 |
-
-`MAX_DAILY_POSTS=0` の間、bot は収集・判定・照合まで全部やるが
-X には一切投稿せず「投稿待ち」キューに溜める。
-`/admin` で中身を確認し、納得してから `12` に変えて再デプロイすれば
-溜まった分から自動で流れ始める。
-
-### ③ 本番へ切り替え
-
-```powershell
-cd C:\Users\iceman\ice-cream-bot
-git checkout main
-git merge renewal/v2
-git push origin main renewal/v2
-```
-
-### ④ 動作確認
-
-```powershell
-# CRON_SECRET は .env.local から取得
-$s = (Select-String -Path .env.local -Pattern '^CRON_SECRET=' ).Line -replace '^CRON_SECRET="?|"$',''
-curl.exe -s -H "Authorization: Bearer $s" "https://<本番URL>/api/selftest?media=1"
-```
-
-`healthy: true` になれば全依存先（RSS・Redis・Claude・X認証・画像アップロード）が生きている。
-10分おきの cron が回り始めるので、Vercel のログか `/admin` の「実行ログ」タブで
-取得件数・候補件数・判定結果を見る。
-
----
+`/admin` の「投稿済み」タブか、Vercel のログで
+`[scan:live] 取得… 投稿1 …` の行を確認する。
 
 ## 未検証で残っているもの
 

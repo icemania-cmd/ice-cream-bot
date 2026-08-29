@@ -94,11 +94,13 @@ export async function GET(request: NextRequest) {
       メーカー: extraction.maker,
       価格: extraction.price,
       発売日: extraction.release_date,
+      発売日の原文表記: extraction.release_date_text || "(空)",
       販売エリア: extraction.region,
     },
     投稿不可の問題: check.blocking,
     承認待ちに回る理由: check.warnings,
     画像: release.imageUrl || "(取得できず)",
+    配信元の取得結果: release.corp || "(取得できず)",
     注記: "この窓口はXへの投稿も状態の書き換えも行いません",
   });
 }

@@ -30,7 +30,7 @@ export interface ReleaseDetail {
   ogImage?: string;
   /** og:title（記事URLだけを指定して試すときの表題） */
   ogTitle?: string;
-  /** og:site_name や本文から拾えた配信企業名 */
+  /** 配信企業名（og:site_name は「PR TIMES」になるため <title> から取る） */
   ogSiteName?: string;
 }
 
@@ -285,7 +285,12 @@ export async function fetchReleaseDetail(
 
     const ogImage = metaContent(html, "og:image");
     const ogTitle = metaContent(html, "og:title");
-    const ogSiteName = metaContent(html, "og:site_name");
+    // PR TIMES の og:site_name は「…｜PR TIMES」で会社名にならない。
+    // <title> の「｜○○のプレスリリース」から配信元を取る。
+    const titleTag = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "";
+    const ogSiteName =
+      decodeEntities(titleTag).match(/[|｜]\s*([^|｜]+?)のプレスリリース/)?.[1]?.trim() ||
+      metaContent(html, "og:site_name");
 
     // 本文らしき領域を優先的に切り出し、取れなければ全体から抜く
     const main =

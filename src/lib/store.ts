@@ -430,3 +430,96 @@ export async function claimForPost(guid: string): Promise<boolean> {
 export async function releaseClaim(guid: string): Promise<void> {
   await redis.del(`v2:claim:${guid}`);
 }
+
+// ===== 同一商品の二重投稿の防止 =====
+
+/**
+ * 記事ID単位の重複防止だけでは、同じ商品を2回投稿してしまう。
+ * コラボ商品はメーカー双方がリリースを出すため、別々の記事IDで
+ * 同じ商品が流れてくる（例: サーティワン自身のリリースと、
+ * コラボ相手のリリースに同じ新フレーバーが載る）。
+ * 投稿済みの商品名を保持し、名前が十分に重なるものは承認待ちに回す。
+ */
+const POSTED_PRODUCTS_KEY = "v2:products";
+const PRODUCT_MEMORY_DAYS = 45;
+
+/** 比較用に商品名を均す。verify.ts の正規化と目的は同じだが独立に持つ */
+function productKey(name: string): string {
+  return name
+    .replace(/[（(][^）)]*[）)]\s*$/, "")
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[Ａ-Ｚａ-ｚ]/g, (c) =>
+      String.fromCharCode(c.charCodeAt(0) - 0xfee0)
+    )
+    .replace(/[＆]/g, "&")
+    .replace(/[「」『』“”‘’"'【】・･\s　]/g, "")
+    .toLowerCase();
+}
+
+function significantTokens(name: string): string[] {
+  return name
+    .split(/[\s　・･/／、,＆&＋+\-ー―「」『』()（）]+/)
+    .map((t) => productKey(t))
+    .filter((t) => t.length >= 2);
+}
+
+/**
+ * 2つの商品名が同一商品を指していそうか。
+ *
+ * 判定は厳しめにする。同じシリーズの別フレーバー
+ * （ANY1 ICE CREAM あずき / ANY1 ICE CREAM 抹茶）は別商品なので、
+ * 共通語が多いだけで同一扱いにしてはいけない。
+ */
+export function looksSameProduct(a: string, b: string): boolean {
+  const ka = productKey(a);
+  const kb = productKey(b);
+  if (!ka || !kb) return false;
+  if (ka === kb) return true;
+  // 一方が他方を含む（「ミルキーショートケーキ」と「31 ミルキーショートケーキ」）
+  if (ka.length >= 5 && kb.includes(ka)) return true;
+  if (kb.length >= 5 && ka.includes(kb)) return true;
+  // 構成語の重なりで見る
+  const ta = new Set(significantTokens(a));
+  const tb = new Set(significantTokens(b));
+  if (ta.size === 0 || tb.size === 0) return false;
+  let shared = 0;
+  for (const t of ta) if (tb.has(t)) shared++;
+  // 和集合に対する重なり（Jaccard）で見る。
+  // 少ない方を分母にすると、フレーバー違いを取り違える。
+  const union = ta.size + tb.size - shared;
+  return union > 0 && shared / union >= 0.8;
+}
+
+/**
+ * 直近に投稿した商品の中に、同じ商品と思われるものがあれば
+ * その名前を返す。無ければ null。消費コマンドは1。
+ */
+export async function findSimilarPostedProduct(
+  productName: string
+): Promise<string | null> {
+  if (!productName) return null;
+  const recent = (await redis.zrange(
+    POSTED_PRODUCTS_KEY,
+    Date.now() - PRODUCT_MEMORY_DAYS * DAY,
+    Date.now(),
+    { byScore: true }
+  )) as string[];
+  for (const name of recent) {
+    if (looksSameProduct(productName, name)) return name;
+  }
+  return null;
+}
+
+export async function rememberPostedProduct(
+  productName: string
+): Promise<void> {
+  if (!productName) return;
+  const pipe = redis.pipeline();
+  pipe.zadd(POSTED_PRODUCTS_KEY, { score: Date.now(), member: productName });
+  pipe.zremrangebyscore(
+    POSTED_PRODUCTS_KEY,
+    0,
+    Date.now() - PRODUCT_MEMORY_DAYS * DAY
+  );
+  await pipe.exec();
+}

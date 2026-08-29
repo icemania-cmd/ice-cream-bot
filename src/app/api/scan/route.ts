@@ -15,6 +15,7 @@ import {
   claimForPost,
   enqueue,
   filterUnhandled,
+  findSimilarPostedProduct,
   getRateStatus,
   jstDateString,
   listQueue,
@@ -23,6 +24,7 @@ import {
   pruneOldEntries,
   queueSize,
   recordPost,
+  rememberPostedProduct,
   releaseClaim,
   releaseRunLock,
   type QueuedItem,
@@ -120,6 +122,7 @@ export async function GET(request: NextRequest) {
       return false;
     }
 
+    await rememberPostedProduct(item.productName);
     await markPosted(item.guid, {
       title: item.title,
       link: item.link,
@@ -250,6 +253,16 @@ export async function GET(request: NextRequest) {
         }
 
         const check = verifyPost({ extraction, sourceText, today });
+
+        // 同じ商品を別の記事で二重投稿しないか確認する。
+        // コラボ商品は両社がリリースを出すため、記事ID単位の重複防止では防げない。
+        const twin = await findSimilarPostedProduct(extraction.product_name);
+        if (twin) {
+          check.warnings.push(
+            `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）`
+          );
+          check.autoPostable = false;
+        }
 
         const item: QueuedItem = {
           guid: release.guid,

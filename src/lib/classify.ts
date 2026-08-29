@@ -191,9 +191,15 @@ export async function classifyAndCompose(
   let postText = str(raw.post_text);
 
   // 長さ超過は「投稿不可」になってしまい、内容が正しくても世に出ない。
-  // 指示だけでは守りきれないので、超えたら1度だけ短縮させる。
-  if (raw.is_ice_cream_new_product === true && tweetWeight(postText) > MAX_TWEET_WEIGHT) {
-    postText = await shorten(postText);
+  // 指示だけでは守りきれないので、上限を下回るまで短縮を繰り返す。
+  // 1回だけだと「短くはなったがまだ超過」で終わることがある（実測289字）。
+  if (raw.is_ice_cream_new_product === true) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (tweetWeight(postText) <= MAX_TWEET_WEIGHT) break;
+      const shorter = await shorten(postText, attempt);
+      if (shorter === postText) break; // これ以上縮まらない
+      postText = shorter;
+    }
   }
 
   return {
@@ -215,7 +221,9 @@ export async function classifyAndCompose(
  * 長すぎる投稿文を1度だけ短縮させる。
  * 事実を落とすのではなく、味の描写や修飾を削らせる。
  */
-async function shorten(text: string): Promise<string> {
+async function shorten(text: string, attempt = 0): Promise<string> {
+  // 回を追うごとに目標を厳しくする。1回目で足りなければもっと削る必要がある。
+  const goal = Math.max(160, TARGET_TWEET_WEIGHT - attempt * 30);
   try {
     const message = await anthropic.messages.create({
       model: CLAUDE_MODEL,
@@ -223,9 +231,9 @@ async function shorten(text: string): Promise<string> {
       messages: [
         {
           role: "user",
-          content: `次のX投稿文が長すぎます。全角2文字・半角1文字換算で ${TARGET_TWEET_WEIGHT} 以内に収めてください。
+          content: `次のX投稿文が長すぎます。全角2文字・半角1文字換算で ${goal} 以内に必ず収めてください。現在は ${tweetWeight(text)} です。
 
-【削ってよいもの】味や食感の描写、修飾語、二文目以降の補足
+【削ってよいもの】味や食感の描写、修飾語、冒頭のフック、二文目以降の補足
 【絶対に残すもの】冒頭の「${POST_PREFIX}」、メーカー名、商品名、発売日、価格、末尾のひと言
 【禁止】書かれていない情報を足すこと、URL、ハッシュタグ、絵文字
 

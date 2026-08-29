@@ -255,6 +255,15 @@ function taxNear(text: string, priceRaw: string): string | null {
  * 同じ商品を別の言い回しで書いてしまうことがあるため、
  * 完全一致ではなく「構成語がすべて含まれるか」で見る。
  */
+/**
+ * 商品名の末尾に付いた補足を落とす。
+ * 「UN/ICE BOX（10フレーバー）」のように内容量やフレーバー数を括弧で
+ * 付け足して抽出されることがあり、そのままだと投稿文と一致しない。
+ */
+function coreProductName(name: string): string {
+  return name.replace(/[（(][^）)]*[）)]\s*$/, "").trim();
+}
+
 function productTokens(productName: string): string[] {
   return productName
     .split(/[\s　・･/／、,＆&＋+\-ー―「」『』()（）]+/)
@@ -323,7 +332,7 @@ export function verifyPost(params: {
   const blocking: string[] = [];
   const warnings: string[] = [];
   const src = normalize(sourceText);
-  const product = normalize(ex.product_name);
+  const product = normalize(coreProductName(ex.product_name));
 
   // 接頭辞はモデルが付け忘れることがあるのでコード側で必ず整える。
   // 【】以外で始まっていても二重付与にならないよう、先頭の【…】は一度剥がす。
@@ -348,7 +357,7 @@ export function verifyPost(params: {
   // ---- 事実照合（1つでも当たれば承認待ちへ）----
 
   // 1. 商品名（完全一致ではなく、構成語がすべて含まれるかで見る）
-  const tokens = productTokens(ex.product_name);
+  const tokens = productTokens(coreProductName(ex.product_name));
   if (!ex.product_name) {
     warnings.push("商品名を特定できていません");
   } else {

@@ -10,6 +10,7 @@ import {
   markPosted,
   recordPost,
   reject,
+  rememberPostedProduct,
   releaseClaim,
   type QueueName,
 } from "@/lib/store";
@@ -123,6 +124,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    await rememberPostedProduct(item.productName);
     await markPosted(guid, {
       title: item.title,
       link: item.link,

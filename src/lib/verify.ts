@@ -1,4 +1,4 @@
-import { MAX_TWEET_WEIGHT, POST_PREFIX } from "./config";
+import { MAX_TWEET_WEIGHT, POST_PREFIX, tweetWeight } from "./config";
 import type { Extraction } from "./classify";
 
 /**
@@ -63,12 +63,8 @@ function normalize(s: string): string {
   );
 }
 
-/** X の文字数カウント近似（全角2・半角1）。URLは含めない前提。 */
-export function tweetWeight(text: string): number {
-  let w = 0;
-  for (const ch of text) w += ch.codePointAt(0)! > 0xff ? 2 : 1;
-  return w;
-}
+// 既存の呼び出し元（管理画面のAPI）向けに再輸出する
+export { tweetWeight };
 
 /** "2026-09-01" → 原文にありうる表記のバリエーション（正規化済み） */
 function dateVariants(iso: string): string[] {
@@ -104,6 +100,8 @@ function indicesOf(hay: string, needle: string): number[] {
 
 /** 商品名の周辺に token があるか。商品名が見つからない場合は全文一致に緩める。 */
 const PROXIMITY_WINDOW = 200;
+/** 抽出結果の裏付けを探すときに、商品名との距離として許す範囲 */
+const EVIDENCE_WINDOW = 300;
 
 function nearProduct(
   src: string,
@@ -180,6 +178,29 @@ function priceOccurrences(text: string): Occurrence<number>[] {
   return out;
 }
 
+/**
+ * 「280円(税込308円)」のように、ひとつの価格表記が複数の金額を含むことがある。
+ * 近接した価格はまとめて1件の価格表記として扱わないと、
+ * 税込額を書いただけで「別商品の価格」と誤検出してしまう。
+ */
+const PRICE_GROUP_GAP = 12;
+
+function groupPrices(
+  prices: Occurrence<number>[]
+): Occurrence<number[]>[] {
+  const groups: Occurrence<number[]>[] = [];
+  for (const p of prices) {
+    const last = groups[groups.length - 1];
+    if (last && p.index - (last.index + last.raw.length) <= PRICE_GROUP_GAP) {
+      last.value.push(p.value);
+      last.raw = `${last.raw}…${p.raw}`;
+      continue;
+    }
+    groups.push({ index: p.index, raw: p.raw, value: [p.value] });
+  }
+  return groups;
+}
+
 // ---- 日付 ----
 
 /** 表記ゆれを吸収した日付の正規形。"9-1" や "9-上旬" のような形にする。 */
@@ -209,13 +230,40 @@ function dateOccurrences(text: string): Occurrence<string>[] {
 
 const TAX_TERMS = ["税込", "税抜", "税別"] as const;
 
-/** 文中で price の直後（15文字以内）に現れる税表記を返す */
+/**
+ * 文中で price に付いている税表記を返す。
+ * 「373円（税込）」のように後ろに来る形が普通だが、
+ * 「280円（税込308円）」のように前に来る形もあるため両方向を見る。
+ * 後ろを優先し、無ければ直前を見る。
+ */
 function taxNear(text: string, priceRaw: string): string | null {
-  for (const idx of indicesOf(text, priceRaw)) {
-    const window = text.slice(idx, idx + priceRaw.length + 15);
-    for (const t of TAX_TERMS) if (window.includes(t)) return t;
+  const positions = indicesOf(text, priceRaw);
+  for (const idx of positions) {
+    const forward = text.slice(idx, idx + priceRaw.length + 15);
+    for (const t of TAX_TERMS) if (forward.includes(t)) return t;
+  }
+  for (const idx of positions) {
+    const backward = text.slice(Math.max(0, idx - 12), idx);
+    for (const t of TAX_TERMS) if (backward.includes(t)) return t;
   }
   return null;
+}
+
+/**
+ * 商品名を意味のある単位に割る。
+ * 「ANY1 ICE あずき」と「ANY1 ICE CREAMから第三弾『あずき』」のように、
+ * 同じ商品を別の言い回しで書いてしまうことがあるため、
+ * 完全一致ではなく「構成語がすべて含まれるか」で見る。
+ */
+function productTokens(productName: string): string[] {
+  return productName
+    .split(/[\s　・･/／、,＆&＋+\-ー―「」『』()（）]+/)
+    .map((t) => normalize(t))
+    .filter((t) => t.length >= 2);
+}
+
+function containsAllTokens(haystack: string, tokens: string[]): boolean {
+  return tokens.length > 0 && tokens.every((t) => haystack.includes(t));
 }
 
 // ---- 販売エリア ----
@@ -288,15 +336,16 @@ export function verifyPost(params: {
 
   // ---- 事実照合（1つでも当たれば承認待ちへ）----
 
-  // 1. 商品名
+  // 1. 商品名（完全一致ではなく、構成語がすべて含まれるかで見る）
+  const tokens = productTokens(ex.product_name);
   if (!ex.product_name) {
     warnings.push("商品名を特定できていません");
   } else {
-    if (!src.includes(product)) {
-      warnings.push(`商品名「${ex.product_name}」が原文と一致しません`);
+    if (!src.includes(product) && !containsAllTokens(src, tokens)) {
+      warnings.push(`商品名「${ex.product_name}」が原文で確認できません`);
     }
-    if (!ntext.includes(product)) {
-      warnings.push("投稿文に商品名が含まれていません");
+    if (!ntext.includes(product) && !containsAllTokens(ntext, tokens)) {
+      warnings.push("投稿文に商品名が入っていません");
     }
   }
 
@@ -310,26 +359,57 @@ export function verifyPost(params: {
   // ---- 原文側の値を1度だけ抽出しておく ----
   const srcPrices = priceOccurrences(src);
   const srcDates = dateOccurrences(src);
-  const productPrices = attributedValues(src, product, srcPrices);
+  const priceGroups = groupPrices(srcPrices);
+  const attributedGroup = attributedValues(src, product, priceGroups);
+  // 商品名の直後にある価格表記に含まれる金額（税抜・税込の両方）
+  const productPrices = attributedGroup
+    ? new Set<number>(Array.from(attributedGroup).flat())
+    : null;
   const productDates = attributedValues(src, product, srcDates);
 
   // 3. 発売日
+  //
+  // 位置による推定（商品名の直後にある日付）だけだと、
+  // 「キャンペーン期間：9月1日〜9月30日」のように発売日が商品名より前に
+  // 書かれている記事で取りこぼす。そこで、AIが抽出した発売日の「原文での表記」が
+  // 実際に原文にあり、かつその近くでこの商品が語られている場合は、
+  // 位置の推定より抽出結果を優先する。
+  // 「原文のどこかにあればOK」にはしない（それでは別商品の日付を拾える）。
+  const isoMatch = ex.release_date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const canonRelease = isoMatch
+    ? `${parseInt(isoMatch[2], 10)}-${parseInt(isoMatch[3], 10)}`
+    : null;
+
+  const evidenceBackedDate = (() => {
+    if (!ex.release_date_text) return false;
+    const ev = normalize(ex.release_date_text);
+    if (!ev || !src.includes(ev)) return false;
+    for (const idx of indicesOf(src, ev)) {
+      const w = src.slice(
+        Math.max(0, idx - EVIDENCE_WINDOW),
+        idx + ev.length + EVIDENCE_WINDOW
+      );
+      if (w.includes(product) || containsAllTokens(w, tokens)) return true;
+    }
+    return false;
+  })();
+
   if (!ex.release_date) {
     warnings.push("発売日を特定できていません");
   } else {
-    const iso = ex.release_date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    const canon = iso
-      ? `${parseInt(iso[2], 10)}-${parseInt(iso[3], 10)}`
-      : null;
-
-    if (canon && productDates && !productDates.has(canon)) {
-      warnings.push(
-        `発売日 ${ex.release_date} がこの商品の日付として原文で確認できません（原文で商品名の直後にある日付: ${Array.from(productDates).join("/")}）`
-      );
-    } else if (canon && !srcDates.some((o) => o.value === canon)) {
-      warnings.push(
-        `発売日 ${ex.release_date} が原文に見当たりません（AIの推定の可能性）`
-      );
+    const attributed = productDates?.has(canonRelease ?? "") ?? false;
+    if (!attributed && !evidenceBackedDate) {
+      if (!srcDates.some((o) => o.value === canonRelease)) {
+        warnings.push(
+          `発売日 ${ex.release_date} が原文に見当たりません（AIの推定の可能性）`
+        );
+      } else {
+        warnings.push(
+          `発売日 ${ex.release_date} がこの商品の日付か確認できません（原文で商品名の直後にある日付: ${
+            productDates ? Array.from(productDates).join("/") : "不明"
+          }）`
+        );
+      }
     }
 
     if (ex.release_date < today) {
@@ -337,7 +417,7 @@ export function verifyPost(params: {
     }
 
     // 抽出した発売日が投稿文に現れているか（本文と抽出結果の食い違い検出）
-    const inText = dateOccurrences(ntext).some((o) => o.value === canon);
+    const inText = dateOccurrences(ntext).some((o) => o.value === canonRelease);
     if (!inText) {
       warnings.push("抽出した発売日が投稿文に見当たりません");
     }
@@ -347,7 +427,13 @@ export function verifyPost(params: {
   for (const o of dateOccurrences(ntext)) {
     if (!srcDates.some((s2) => s2.value === o.value)) {
       warnings.push(`投稿文の日付「${o.raw}」が原文に見当たりません`);
-    } else if (productDates && !productDates.has(o.value)) {
+      continue;
+    }
+    // 抽出した発売日そのもので、裏付けが取れているものは通す
+    if (o.value === canonRelease && (evidenceBackedDate || productDates?.has(o.value))) {
+      continue;
+    }
+    if (productDates && !productDates.has(o.value)) {
       warnings.push(
         `投稿文の日付「${o.raw}」は別商品の日付の可能性があります（この商品の日付: ${Array.from(productDates).join("/")}）`
       );

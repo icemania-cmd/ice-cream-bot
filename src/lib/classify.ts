@@ -1,5 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { CLAUDE_MODEL, POST_PREFIX } from "./config";
+import {
+  CLAUDE_MODEL,
+  MAX_TWEET_WEIGHT,
+  POST_PREFIX,
+  TARGET_TWEET_WEIGHT,
+  tweetWeight,
+} from "./config";
 import type { Release } from "./prtimes";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
@@ -50,12 +56,12 @@ const REPORT_TOOL: Anthropic.Tool = {
       release_date: {
         type: "string",
         description:
-          "発売日を YYYY-MM-DD 形式で。年の記載がなければ配信日の年を使う。既に発売中、または記載がなければ空文字",
+          "その商品の発売日を YYYY-MM-DD 形式で。キャンペーン期間の終了日・予約開始日・イベント開催日と混同しないこと。年の記載がなければ配信日の年を使う。既に発売中、または記載がなければ空文字",
       },
       release_date_text: {
         type: "string",
         description:
-          "発売日が原文でどう書かれていたか、そのままの表記（例: 9月1日、2026年9月1日（月））。無ければ空文字",
+          "その発売日が原文でどう書かれていたか、原文からそのまま写した表記（例: 9月1日、2026年9月1日（月））。原文に存在しない書き方をしないこと。無ければ空文字",
       },
       region: {
         type: "string",
@@ -130,7 +136,9 @@ PR TIMES のプレスリリースを読み、(1) それがアイスの新商品�
 - 日付・価格は原文の表記をそのまま使う。年は省略し「9月1日発売」の形。ゼロ埋めしない（09月01日→9月1日）
 - 販売エリアは原文に明記がある場合のみ書く。「全国」と書かれていないなら「全国」と書かない
 - URL は入れない。ハッシュタグは付けない。絵文字は使わない
-- 全角2文字・半角1文字換算で 280 以内に必ず収める
+- 商品名は product_name に入れたものと同じ表記を、投稿文にもそのまま使う（言い換え・省略・別名の合成をしない）
+- 長さは全角2文字・半角1文字換算で ${TARGET_TWEET_WEIGHT} 以内。日本語なら概ね100〜110文字。
+  超えると投稿できないので、味の説明を削ってでも収めること
 - ですます調をベースに、体言止めやカジュアルなひと言を自然に混ぜる。毎回同じ構成にしない
 - 末尾のひと言は次のいずれかから1つ選び、前後と自然につなげる: ${shuffled.join(" / ")}
 
@@ -178,6 +186,14 @@ export async function classifyAndCompose(
   const raw = toolUse.input as Partial<Extraction>;
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
+  let postText = str(raw.post_text);
+
+  // 長さ超過は「投稿不可」になってしまい、内容が正しくても世に出ない。
+  // 指示だけでは守りきれないので、超えたら1度だけ短縮させる。
+  if (raw.is_ice_cream_new_product === true && tweetWeight(postText) > MAX_TWEET_WEIGHT) {
+    postText = await shorten(postText);
+  }
+
   return {
     is_ice_cream_new_product: raw.is_ice_cream_new_product === true,
     reason: str(raw.reason),
@@ -189,6 +205,40 @@ export async function classifyAndCompose(
       : "",
     release_date_text: str(raw.release_date_text),
     region: str(raw.region),
-    post_text: str(raw.post_text),
+    post_text: postText,
   };
+}
+
+/**
+ * 長すぎる投稿文を1度だけ短縮させる。
+ * 事実を落とすのではなく、味の描写や修飾を削らせる。
+ */
+async function shorten(text: string): Promise<string> {
+  try {
+    const message = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 500,
+      messages: [
+        {
+          role: "user",
+          content: `次のX投稿文が長すぎます。全角2文字・半角1文字換算で ${TARGET_TWEET_WEIGHT} 以内に収めてください。
+
+【削ってよいもの】味や食感の描写、修飾語、二文目以降の補足
+【絶対に残すもの】冒頭の「${POST_PREFIX}」、メーカー名、商品名、発売日、価格、末尾のひと言
+【禁止】書かれていない情報を足すこと、URL、ハッシュタグ、絵文字
+
+短縮した投稿文だけを出力してください。前置きや説明は不要です。
+
+${text}`,
+        },
+      ],
+    });
+    const out =
+      message.content[0]?.type === "text" ? message.content[0].text.trim() : "";
+    // 短縮に失敗した（かえって長い・空）なら元のまま返し、照合側で弾かせる
+    if (!out || tweetWeight(out) >= tweetWeight(text)) return text;
+    return out;
+  } catch {
+    return text;
+  }
 }

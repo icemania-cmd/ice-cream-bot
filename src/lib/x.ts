@@ -282,13 +282,15 @@ async function uploadV1(
   return { error: `v1.1 応答に media id なし: ${res.text.slice(0, 200)}` };
 }
 
-export async function uploadMedia(
-  imageUrl: string
+/**
+ * 手元にある画像データをそのままアップロードする。
+ * 自己診断で「Xへのアップロードだけ」を、外部サイトの都合に左右されずに
+ * 検証するために切り出してある。
+ */
+export async function uploadMediaBuffer(
+  image: DownloadedImage
 ): Promise<MediaUploadResult> {
   const credentials = getCredentials();
-  const { image, error } = await downloadImage(imageUrl);
-  if (!image) return { error };
-
   try {
     const v2 = await uploadV2(image, credentials);
     if (v2.mediaId) return v2;
@@ -298,6 +300,14 @@ export async function uploadMedia(
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+export async function uploadMedia(
+  imageUrl: string
+): Promise<MediaUploadResult> {
+  const { image, error } = await downloadImage(imageUrl);
+  if (!image) return { error };
+  return uploadMediaBuffer(image);
 }
 
 // ===== 投稿 =====

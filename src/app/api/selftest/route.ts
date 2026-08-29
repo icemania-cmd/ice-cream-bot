@@ -3,11 +3,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { CLAUDE_MODEL, FIREHOSE_URL } from "@/lib/config";
 import { fetchReleases } from "@/lib/prtimes";
 import { prefilter } from "@/lib/filter";
-import {
-  missingCredentials,
-  uploadMedia,
-  verifyCredentials,
-} from "@/lib/x";
+import { missingCredentials, uploadMediaBuffer, verifyCredentials } from "@/lib/x";
+import { makeTestPng } from "@/lib/testimage";
 import { queueSize, redisToken, redisUrl, storeHealth } from "@/lib/store";
 
 export const maxDuration = 120;
@@ -34,6 +31,8 @@ export async function GET(request: NextRequest) {
 
   const checks: Check[] = [];
   const testMedia = new URL(request.url).searchParams.get("media") === "1";
+  const rejectionReasons: Record<string, number> = {};
+  let iceMentioned = 0;
 
   // 1. 環境変数
   const requiredEnv = [
@@ -81,12 +80,28 @@ export async function GET(request: NextRequest) {
     const { releases, feedsOk, feedsFailed } = await fetchReleases(false);
     const passed = releases.filter((r) => prefilter(r).passed);
     sampleTitles = passed.slice(0, 5).map((r) => r.title);
+
+    // 通過0件のとき「アイスの新商品が今たまたま無い」のか
+    // 「フィルタが壊れている」のかを切り分けられるよう、落ちた理由を集計する
+    for (const r of releases) {
+      const pf = prefilter(r);
+      if (pf.passed) continue;
+      const key = pf.reason.split(":")[0];
+      rejectionReasons[key] = (rejectionReasons[key] || 0) + 1;
+    }
+    // 「アイスの語はあるが発売告知ではない」記事はフィルタが生きている証拠になる
+    iceMentioned = releases.filter((r) =>
+      /アイス|ジェラート|ソフトクリーム|かき氷|氷菓/.test(
+        `${r.title}${r.summary}`
+      )
+    ).length;
+
     checks.push({
       name: "PR TIMES フィード",
       ok: feedsOk > 0 && releases.length > 0,
       detail:
         feedsOk > 0
-          ? `${releases.length}件取得（${FIREHOSE_URL}）／事前フィルタ通過 ${passed.length}件`
+          ? `${releases.length}件取得（${FIREHOSE_URL}）／アイス語を含む記事 ${iceMentioned}件／事前フィルタ通過 ${passed.length}件`
           : `失敗: ${feedsFailed.map((f) => f.error).join(", ")}`,
     });
   } catch (e) {
@@ -138,14 +153,16 @@ export async function GET(request: NextRequest) {
 
   // 6. 画像アップロード（任意）
   if (testMedia) {
-    // 1x1 ではなくある程度の大きさが要るため PR TIMES のロゴを利用する
-    const sample = "https://prtimes.jp/common/images/logo_prtimes.png";
-    const m = await uploadMedia(sample);
+    // 外部サイトの画像URLに依存すると、その画像が消えた時点で
+    // 「Xへのアップロードが通るのか」という肝心の検証ができなくなる。
+    // 検証用PNGはその場で生成する。
+    const png = makeTestPng(256);
+    const m = await uploadMediaBuffer({ buffer: png, contentType: "image/png" });
     checks.push({
       name: "X 画像アップロード",
       ok: !!m.mediaId,
       detail: m.mediaId
-        ? `成功（${m.via} / media_id=${m.mediaId}）`
+        ? `成功（${m.via} エンドポイント / ${Math.round(png.length / 1024)}KB のPNGを送信 / media_id=${m.mediaId}）`
         : `失敗: ${m.error}`,
     });
   } else {
@@ -172,6 +189,7 @@ export async function GET(request: NextRequest) {
       checks,
       queues: { 投稿待ち: ready, 承認待ち: review },
       サンプル候補: sampleTitles,
+      フィルタで落ちた理由の内訳: rejectionReasons,
     },
     { status: failed.length === 0 ? 200 : 503 }
   );

@@ -92,6 +92,25 @@ Vercel → ice-cream-bot → Settings → Environment Variables で
 
 ---
 
+## 環境変数の扱い
+
+**Vercel の「Sensitive」指定は使わないこと。**
+Sensitive にした値は書き込み専用になり、ダッシュボードからも
+`vercel env pull` からも二度と取得できない。
+実際に `ADMIN_SECRET` を Sensitive にして値が分からなくなり、
+管理画面に入れなくなった（作り直すしかなかった）。
+
+`.env.local` を `vercel env pull` で更新すると、Sensitive 指定の項目は
+`[SENSITIVE]` というプレースホルダで上書きされる。**手元の実値が消えるので、
+pull の前に控えを取ること。**
+
+管理画面は `ADMIN_SECRET` と `CRON_SECRET` のどちらでも開ける。
+CRON_SECRET は /api/scan を叩けて投稿まで起こせるため、
+権限としてはもともと ADMIN_SECRET より広く、後退にはならない。
+締め出されないための保険。
+
+---
+
 ## 触ってはいけないところ
 
 - `src/lib/verify.ts` の照合を緩めて「全部自動投稿」にすること。

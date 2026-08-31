@@ -175,8 +175,22 @@ export async function GET(request: NextRequest) {
     }
 
     // ---- 2. 収集 ----
-    const { releases, feedsOk, feedsFailed } = await fetchReleases(deep);
+    const { releases, feedsOk, feedsFailed, freshnessMinutes, newestAt } =
+      await fetchReleases(deep);
     log.fetched = releases.length;
+
+    // フィードが止まっていないかを毎回記録する。
+    // 速報botなので、ここが数時間遅れていたら投稿件数以前の問題になる。
+    if (freshnessMinutes !== null) {
+      log.notes.push(
+        `フィード最新: ${newestAt}（${freshnessMinutes}分前）`
+      );
+      if (freshnessMinutes > 90) {
+        log.errors.push(
+          `フィードが${freshnessMinutes}分前で止まっています。配信側またはCDNのキャッシュを疑ってください`
+        );
+      }
+    }
     for (const f of feedsFailed) {
       log.errors.push(`フィード取得失敗 ${f.source}: ${f.error}`);
     }

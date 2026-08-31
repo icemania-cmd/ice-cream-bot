@@ -37,6 +37,23 @@ export interface ReleaseDetail {
 // ===== 低レベルユーティリティ =====
 
 /** AbortController 付き fetch。Vercel 上で1本のリクエストが全体を道連れにしないようにする。 */
+/**
+ * キャッシュ回避用のクエリを足す。
+ *
+ * 配信側やCDNがフィードをキャッシュしていると、10分おきに叩いても
+ * 同じ内容が返り続け、数時間ぶんがまとめて出現する挙動になる。
+ * 速報botとしては致命的なので、毎回URLを変えて確実に取りに行く。
+ */
+function bustCache(url: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.set("_", Date.now().toString());
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 async function fetchTextWithTimeout(
   url: string,
   timeoutMs: number,
@@ -45,8 +62,13 @@ async function fetchTextWithTimeout(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": BROWSER_UA, Accept: accept },
+    const res = await fetch(bustCache(url), {
+      headers: {
+        "User-Agent": BROWSER_UA,
+        Accept: accept,
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+      },
       signal: controller.signal,
       cache: "no-store",
     });
@@ -190,6 +212,10 @@ export interface FetchReport {
   releases: Release[];
   feedsOk: number;
   feedsFailed: { source: string; error: string }[];
+  /** 主ソースの最新記事が何分前のものか。フィードが止まっていないかの指標 */
+  freshnessMinutes: number | null;
+  /** 主ソースの最新記事の配信時刻 */
+  newestAt: string | null;
 }
 
 /**
@@ -237,7 +263,15 @@ export async function fetchReleases(
       new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime()
   );
 
-  return { releases, feedsOk, feedsFailed };
+  // フィードの鮮度。ここが数時間ぶん遅れていたら配信側かCDNのキャッシュを疑う。
+  const firehose = releases.filter((r) => r.source === "firehose");
+  const newest = firehose.length > 0 ? firehose[0].publishedAt : null;
+  const newestMs = newest ? new Date(newest).getTime() : NaN;
+  const freshnessMinutes = Number.isFinite(newestMs)
+    ? Math.round((Date.now() - newestMs) / 60000)
+    : null;
+
+  return { releases, feedsOk, feedsFailed, freshnessMinutes, newestAt: newest };
 }
 
 // ===== 記事ページの詳細取得 =====

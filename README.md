@@ -69,7 +69,7 @@ PR TIMES 全社RSS (index.rdf)      ← 10分おき
 | `GET /api/try?url=<記事URL>` | 記事1本を指定して判定・投稿文生成・照合だけを試す（投稿しない） |
 | `GET /api/selftest` | RSS・Redis・Claude・X認証の疎通診断 |
 | `GET /api/selftest?media=1` | 上記に加え、画像アップロードも実際に試す |
-| `GET /admin` | 承認待ちの確認・編集・投稿・却下（ブラウザ） |
+| `GET /admin` | 承認待ちの確認・編集・投稿・却下、**自動投稿のON/OFF**（ブラウザ） |
 | `GET /admin#k=<鍵>` | 鍵つきで開く。スマホのホーム画面に置けばタップだけで入れる |
 
 ### 動作確認のしかた
@@ -131,7 +131,8 @@ Vercel は `CRON_SECRET` を Authorization ヘッダに自動付与するため�
 | 拾う語・除外する語 | `src/lib/filter.ts` |
 | 投稿の文体・締めのひと言 | `src/lib/classify.ts` の `CLOSING_PATTERNS` とプロンプト |
 | 照合の厳しさ（自動投稿の条件） | `src/lib/verify.ts` |
-| 投稿頻度・上限・鮮度 | `src/lib/config.ts`（多くは環境変数でも上書き可） |
+| **自動投稿のON/OFF・1日の上限** | **`/admin` のスイッチ。Redeploy不要で即反映される** |
+| 投稿頻度・鮮度 | `src/lib/config.ts`（多くは環境変数でも上書き可） |
 | 投稿の長さ | `TARGET_TWEET_WEIGHT`（既定230）。X Premium の長文投稿を使うなら `MAX_TWEET_WEIGHT` も環境変数で引き上げる |
 | 冒頭の表記 | `POST_PREFIX`（既定「【発売情報】」） |
 

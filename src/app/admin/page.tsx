@@ -46,12 +46,21 @@ interface RunLog {
   notes: string[];
 }
 
+interface RateStatus {
+  canPost: boolean;
+  reason?: string;
+  todayCount: number;
+  limit: number;
+  autoPost: boolean;
+}
+
 interface QueueData {
   review: QueuedItem[];
   ready: QueuedItem[];
   posted: PostedSummary[];
   runs: RunLog[];
   counts: { ready: number; review: number };
+  rate: RateStatus;
 }
 
 /** X の文字数カウント近似（全角2・半角1） */
@@ -152,6 +161,39 @@ export default function AdminPage() {
   useEffect(() => {
     if (authed && secret) void load(secret);
   }, [authed, secret, load]);
+
+  /**
+   * 自動投稿のON/OFFを切り替える。
+   * ONにすると投稿待ちに溜まっている分から順に出ていくため、確認を挟む。
+   */
+  async function toggleAutoPost(next: boolean) {
+    const waiting = data?.ready.length ?? 0;
+    if (next) {
+      const warn =
+        waiting > 0
+          ? `\n\n投稿待ちの${waiting}件が、次のスキャンから順に自動投稿されます。`
+          : "";
+      if (!confirm(`自動投稿をONにします。${warn}`)) return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-secret": secret,
+        },
+        body: JSON.stringify({ autoPost: next }),
+      });
+      const json = await res.json();
+      setMessage(res.ok ? `✅ ${json.message}` : `❌ ${json.error}`);
+      await load(secret);
+    } catch (e) {
+      setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   function homeLink(): string {
     return `${window.location.origin}/admin#k=${encodeURIComponent(secret)}`;
@@ -377,6 +419,54 @@ export default function AdminPage() {
         >
           {message}
         </p>
+      )}
+
+      {data?.rate && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 14,
+            flexWrap: "wrap",
+            background: C.card,
+            border: `1px solid ${data.rate.autoPost ? C.ok : C.border}`,
+            borderRadius: 12,
+            padding: "14px 18px",
+            marginTop: 18,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>
+              自動投稿{" "}
+              <span style={{ color: data.rate.autoPost ? C.ok : C.warn }}>
+                {data.rate.autoPost ? "ON" : "OFF"}
+              </span>
+            </div>
+            <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>
+              {data.rate.autoPost
+                ? `本日 ${data.rate.todayCount} / ${data.rate.limit} 件。判定を全部通ったものは自動でXへ出ます`
+                : "判定と投稿文の生成は動いています。Xへは出さず、投稿待ちに溜まります"}
+            </div>
+          </div>
+          <button
+            onClick={() => void toggleAutoPost(!data.rate.autoPost)}
+            disabled={loading}
+            style={{
+              padding: "12px 22px",
+              minHeight: 48,
+              borderRadius: 999,
+              border: "none",
+              background: data.rate.autoPost ? C.card : C.ok,
+              color: data.rate.autoPost ? C.warn : "#0f1115",
+              boxShadow: data.rate.autoPost ? `inset 0 0 0 1px ${C.warn}` : "none",
+              fontWeight: 700,
+              fontSize: 14,
+              cursor: "pointer",
+            }}
+          >
+            {data.rate.autoPost ? "OFFにする" : "ONにする"}
+          </button>
+        </div>
       )}
 
       <div style={{ display: "flex", gap: 8, margin: "20px 0", flexWrap: "wrap" }}>

@@ -54,11 +54,14 @@ https://ice-cream-bot.vercel.app/admin を開き（パスワードは `ADMIN_SEC
 
 ### ② 投稿をONにする
 
-Vercel → ice-cream-bot → Settings → Environment Variables で
-`MAX_DAILY_POSTS` を `0` → `12` に変更し、**Redeploy する**
-（環境変数はデプロイ時に取り込まれるため、変更だけでは反映されない）。
+**`/admin` の上部にあるスイッチで切り替える。Redeploy は不要。**
+設定は Redis に保存され、次のスキャンから効く。
 
-溜まっていた分から順に自動投稿が始まる。
+環境変数 `MAX_DAILY_POSTS` は「Redisに設定が無いときの既定値」に降格した。
+運用中の切り替えのたびに Vercel の設定変更と Redeploy を要求するのは
+運用として筋が悪いため。
+
+ONにすると、溜まっていた投稿待ちから順に自動投稿が始まる。
 
 ### ③ 最初の数件を見る
 

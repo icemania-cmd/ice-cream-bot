@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAdmin } from "@/lib/auth";
-import { listPosted, listQueue, listRunLogs, queueSize } from "@/lib/store";
+import {
+  getRateStatus,
+  listPosted,
+  listQueue,
+  listRunLogs,
+  queueSize,
+} from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +16,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   try {
-    const [review, ready, posted, runs, readyCount, reviewCount] =
+    const [review, ready, posted, runs, readyCount, reviewCount, rate] =
       await Promise.all([
         listQueue("review", 50),
         listQueue("ready", 20),
@@ -18,6 +24,7 @@ export async function GET(request: NextRequest) {
         listRunLogs(10),
         queueSize("ready"),
         queueSize("review"),
+        getRateStatus(),
       ]);
     return NextResponse.json({
       review,
@@ -25,6 +32,7 @@ export async function GET(request: NextRequest) {
       posted,
       runs,
       counts: { ready: readyCount, review: reviewCount },
+      rate,
     });
   } catch (e) {
     return NextResponse.json(

@@ -244,6 +244,70 @@ export async function reject(guid: string): Promise<void> {
   await pipe.exec();
 }
 
+// ===== 運用設定（管理画面から変更できる）=====
+
+/**
+ * 自動投稿のON/OFFと1日の上限。
+ *
+ * 環境変数だけで持つと、切り替えのたびに Vercel の設定変更と Redeploy が要る。
+ * 「承認運用でしばらく様子を見て、良さそうならONにする」という判断を
+ * 下すたびに開発作業が発生するのは運用としておかしいので、
+ * Redis に置いて管理画面から切り替えられるようにする。
+ *
+ * Redis に値が無ければ環境変数を既定値として使う（従来どおりの挙動）。
+ */
+const SETTINGS_KEY = "v2:settings";
+
+export interface BotSettings {
+  /** 自動投稿を行うか。false なら判定・照合まで実行してキューに溜めるだけ */
+  autoPost: boolean;
+  /** 1日の投稿上限 */
+  dailyLimit: number;
+  updatedAt: string;
+  /** 設定がRedisにあるか（無ければ環境変数の既定値） */
+  fromRedis: boolean;
+}
+
+function settingsFrom(raw: unknown): BotSettings {
+  const parsed = parse<Partial<BotSettings>>(raw);
+  if (!parsed || typeof parsed.autoPost !== "boolean") {
+    // 未設定。環境変数を既定値にする（MAX_DAILY_POSTS=0 なら自動投稿OFF）
+    return {
+      autoPost: MAX_DAILY_POSTS > 0,
+      dailyLimit: MAX_DAILY_POSTS > 0 ? MAX_DAILY_POSTS : 12,
+      updatedAt: "",
+      fromRedis: false,
+    };
+  }
+  return {
+    autoPost: parsed.autoPost,
+    dailyLimit:
+      typeof parsed.dailyLimit === "number" && parsed.dailyLimit >= 0
+        ? parsed.dailyLimit
+        : MAX_DAILY_POSTS,
+    updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+    fromRedis: true,
+  };
+}
+
+export async function getSettings(): Promise<BotSettings> {
+  return settingsFrom(await redis.get(SETTINGS_KEY));
+}
+
+export async function setSettings(next: {
+  autoPost: boolean;
+  dailyLimit: number;
+}): Promise<BotSettings> {
+  const value: BotSettings = {
+    autoPost: next.autoPost,
+    dailyLimit: Math.max(0, Math.min(100, Math.floor(next.dailyLimit))),
+    updatedAt: new Date().toISOString(),
+    fromRedis: true,
+  };
+  await redis.set(SETTINGS_KEY, JSON.stringify(value));
+  return value;
+}
+
 // ===== レート制限 =====
 
 export interface RateStatus {
@@ -252,16 +316,21 @@ export interface RateStatus {
   todayCount: number;
   limit: number;
   minutesUntilNextSlot: number;
+  /** 自動投稿がONか */
+  autoPost: boolean;
 }
 
 export async function getRateStatus(): Promise<RateStatus> {
   const day = jstDateString();
-  const [countRaw, lastRaw] = (await redis
+  const [countRaw, lastRaw, settingsRaw] = (await redis
     .pipeline()
     .get(K.daily(day))
     .get(K.lastPost)
-    .exec()) as [unknown, unknown];
+    .get(SETTINGS_KEY)
+    .exec()) as [unknown, unknown, unknown];
 
+  const settings = settingsFrom(settingsRaw);
+  const limit = settings.autoPost ? settings.dailyLimit : 0;
   const todayCount = Number(countRaw ?? 0);
   const last = Number(lastRaw ?? 0);
   const elapsedMin = last ? (Date.now() - last) / 60000 : Infinity;
@@ -270,30 +339,35 @@ export async function getRateStatus(): Promise<RateStatus> {
     Math.ceil(MIN_POST_GAP_MINUTES - elapsedMin)
   );
 
-  if (todayCount >= MAX_DAILY_POSTS) {
+  const base = {
+    todayCount,
+    limit,
+    minutesUntilNextSlot,
+    autoPost: settings.autoPost,
+  };
+
+  if (!settings.autoPost) {
     return {
+      ...base,
       canPost: false,
-      reason: `本日の投稿上限に到達（${todayCount}/${MAX_DAILY_POSTS}）`,
-      todayCount,
-      limit: MAX_DAILY_POSTS,
-      minutesUntilNextSlot,
+      reason: "自動投稿はOFF（管理画面で切り替えられます）",
+    };
+  }
+  if (todayCount >= limit) {
+    return {
+      ...base,
+      canPost: false,
+      reason: `本日の投稿上限に到達（${todayCount}/${limit}）`,
     };
   }
   if (minutesUntilNextSlot > 0) {
     return {
+      ...base,
       canPost: false,
       reason: `連投防止のため待機中（あと約${minutesUntilNextSlot}分）`,
-      todayCount,
-      limit: MAX_DAILY_POSTS,
-      minutesUntilNextSlot,
     };
   }
-  return {
-    canPost: true,
-    todayCount,
-    limit: MAX_DAILY_POSTS,
-    minutesUntilNextSlot: 0,
-  };
+  return { ...base, canPost: true };
 }
 
 export async function recordPost(): Promise<void> {

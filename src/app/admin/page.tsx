@@ -83,14 +83,35 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    // URLのフラグメント（#k=…）から鍵を受け取る。
+    // スマホのホーム画面にこのリンクを置けば、タップだけで開ける。
+    //
+    // クエリ（?k=…）ではなくフラグメントを使うのは、フラグメントが
+    // サーバーに送信されないため。クエリだとVercelのアクセスログに
+    // 鍵がそのまま残ってしまう。
+    let key: string | null = null;
     try {
-      const saved = localStorage.getItem("icebot_admin_secret");
-      if (saved) {
-        setSecret(saved);
-        setAuthed(true);
+      const m = window.location.hash.match(/[#&]k=([^&]+)/);
+      if (m) {
+        key = decodeURIComponent(m[1]);
+        // アドレスバーと履歴から鍵を消す（画面を見せた・共有した時の事故防止）
+        window.history.replaceState(null, "", window.location.pathname);
       }
     } catch {
-      /* プライベートブラウジング等では無視 */
+      /* noop */
+    }
+
+    if (!key) {
+      try {
+        key = localStorage.getItem("icebot_admin_secret");
+      } catch {
+        /* プライベートブラウジング等では無視 */
+      }
+    }
+
+    if (key) {
+      setSecret(key);
+      setAuthed(true);
     }
   }, []);
 
@@ -131,6 +152,23 @@ export default function AdminPage() {
   useEffect(() => {
     if (authed && secret) void load(secret);
   }, [authed, secret, load]);
+
+  /**
+   * ホーム画面に置くためのリンクをクリップボードにコピーする。
+   * このリンクを開けばパスワード入力なしで管理画面に入れる。
+   */
+  async function copyHomeLink() {
+    const url = `${window.location.origin}/admin#k=${encodeURIComponent(secret)}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setMessage(
+        "リンクをコピーしました。スマホのブラウザで開き、共有メニューから「ホーム画面に追加」してください。以後タップだけで開けます（このリンクは鍵そのものなので他人に渡さないこと）"
+      );
+    } catch {
+      // クリップボードが使えない環境向け
+      window.prompt("このリンクをコピーしてください", url);
+    }
+  }
 
   async function act(
     item: QueuedItem,
@@ -189,7 +227,10 @@ export default function AdminPage() {
       <main style={{ maxWidth: 420, margin: "0 auto", padding: "80px 20px" }}>
         <h1 style={{ fontSize: 22 }}>🍦 管理画面</h1>
         <p style={{ color: C.sub, fontSize: 14 }}>
-          ADMIN_SECRET（未設定の場合は CRON_SECRET）を入力してください。
+          ADMIN_SECRET または CRON_SECRET を入力してください。
+          <br />
+          一度入れればこの端末に保存されます。ログイン後に「ホーム画面用リンク」を
+          コピーしておくと、次からタップだけで開けます。
         </p>
         <input
           type="password"
@@ -212,7 +253,8 @@ export default function AdminPage() {
           style={{
             marginTop: 12,
             width: "100%",
-            padding: 12,
+            padding: 14,
+            minHeight: 48,
             borderRadius: 8,
             border: "none",
             background: C.accent,
@@ -250,20 +292,39 @@ export default function AdminPage() {
         }}
       >
         <h1 style={{ fontSize: 22, margin: 0 }}>🍦 アイス速報Bot 管理</h1>
-        <button
-          onClick={() => void load(secret)}
-          disabled={loading}
-          style={{
-            padding: "6px 14px",
-            borderRadius: 8,
-            border: `1px solid ${C.border}`,
-            background: C.card,
-            color: C.accent,
-            cursor: "pointer",
-          }}
-        >
-          {loading ? "更新中..." : "再読み込み"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={copyHomeLink}
+            style={{
+              padding: "8px 14px",
+              minHeight: 40,
+              borderRadius: 8,
+              border: `1px solid ${C.border}`,
+              background: C.card,
+              color: C.sub,
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            ホーム画面用リンク
+          </button>
+          <button
+            onClick={() => void load(secret)}
+            disabled={loading}
+            style={{
+              padding: "8px 16px",
+              minHeight: 40,
+              borderRadius: 8,
+              border: `1px solid ${C.border}`,
+              background: C.card,
+              color: C.accent,
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            {loading ? "更新中..." : "再読み込み"}
+          </button>
+        </div>
       </div>
 
       {message && (
@@ -286,7 +347,8 @@ export default function AdminPage() {
             key={t.key}
             onClick={() => setTab(t.key)}
             style={{
-              padding: "8px 16px",
+              padding: "10px 18px",
+              minHeight: 42,
               borderRadius: 999,
               border: `1px solid ${tab === t.key ? C.accent : C.border}`,
               background: tab === t.key ? "#1d2733" : C.card,
@@ -531,7 +593,8 @@ function ReviewCard({
           disabled={busy || over}
           style={{
             flex: 1,
-            padding: 12,
+            padding: 14,
+            minHeight: 48,
             borderRadius: 8,
             border: "none",
             background: over ? "#3a3f4b" : C.ok,
@@ -546,7 +609,8 @@ function ReviewCard({
           onClick={() => onAct(item, queue, "reject")}
           disabled={busy}
           style={{
-            padding: "12px 20px",
+            padding: "14px 22px",
+            minHeight: 48,
             borderRadius: 8,
             border: `1px solid ${C.border}`,
             background: C.card,

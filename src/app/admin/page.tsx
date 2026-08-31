@@ -153,21 +153,44 @@ export default function AdminPage() {
     if (authed && secret) void load(secret);
   }, [authed, secret, load]);
 
+  function homeLink(): string {
+    return `${window.location.origin}/admin#k=${encodeURIComponent(secret)}`;
+  }
+
   /**
    * ホーム画面に置くためのリンクをクリップボードにコピーする。
    * このリンクを開けばパスワード入力なしで管理画面に入れる。
    */
   async function copyHomeLink() {
-    const url = `${window.location.origin}/admin#k=${encodeURIComponent(secret)}`;
+    const url = homeLink();
     try {
       await navigator.clipboard.writeText(url);
       setMessage(
-        "リンクをコピーしました。スマホのブラウザで開き、共有メニューから「ホーム画面に追加」してください。以後タップだけで開けます（このリンクは鍵そのものなので他人に渡さないこと）"
+        "リンクをコピーしました。スマホに送って開き、ブラウザの共有メニューから「ホーム画面に追加」してください"
       );
     } catch {
-      // クリップボードが使えない環境向け
       window.prompt("このリンクをコピーしてください", url);
     }
+  }
+
+  /**
+   * アドレスバーに一時的に鍵を戻す。
+   *
+   * PCのブラウザには「ホーム画面に追加」が無いため、リンクをスマホへ
+   * 渡す必要がある。鍵を戻しておけば、ブラウザ標準の「QRコード」や
+   * 「デバイスに送信」がそのまま使える（スマホでQRを読めば鍵つきで開く）。
+   *
+   * 出しっぱなしは危険なので3分で自動的に消す。
+   */
+  function exposeLinkForQr() {
+    window.history.replaceState(null, "", `/admin#k=${encodeURIComponent(secret)}`);
+    setMessage(
+      "アドレスバーに鍵つきURLを戻しました。ブラウザのメニュー（⋮ または共有）から「QRコードを作成」を選び、スマホで読み取ってください。読み取った先で共有メニュー →「ホーム画面に追加」。3分で自動的にURLから鍵を消します"
+    );
+    window.setTimeout(() => {
+      window.history.replaceState(null, "", "/admin");
+      setMessage("URLから鍵を消しました");
+    }, 180000);
   }
 
   async function act(
@@ -292,7 +315,7 @@ export default function AdminPage() {
         }}
       >
         <h1 style={{ fontSize: 22, margin: 0 }}>🍦 アイス速報Bot 管理</h1>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={copyHomeLink}
             style={{
@@ -306,7 +329,22 @@ export default function AdminPage() {
               fontSize: 13,
             }}
           >
-            ホーム画面用リンク
+            リンクをコピー
+          </button>
+          <button
+            onClick={exposeLinkForQr}
+            style={{
+              padding: "8px 14px",
+              minHeight: 40,
+              borderRadius: 8,
+              border: `1px solid ${C.border}`,
+              background: C.card,
+              color: C.sub,
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            QR用に鍵を表示
           </button>
           <button
             onClick={() => void load(secret)}

@@ -169,11 +169,27 @@ const NON_LAUNCH_TERMS = [
   "サステナビリティ",
 ];
 
+/**
+ * 発売告知でなくても拾いたいもの（あいぱく＝アイスクリーム万博）。
+ *
+ * イベントの開催告知・出展情報も見たいので、これに当たったら
+ * 除外語も発売告知語も見ずに候補へ通す。
+ * 自動投稿はしない（scan 側で承認待ちに固定する）。
+ */
+const WATCH_TERMS = [
+  "あいぱく",
+  "アイスクリーム万博",
+  "日本アイスマニア協会",
+  "アイスマニア協会",
+];
+
 export interface PrefilterResult {
   passed: boolean;
   /** どの語で通ったか／落ちたか。ログとチューニングのために必ず残す。 */
   reason: string;
   hits: string[];
+  /** あいぱく関連。通常の関門を飛ばして通したもの。自動投稿はしない。 */
+  watch?: boolean;
 }
 
 function found(text: string, terms: string[]): string[] {
@@ -186,6 +202,18 @@ function found(text: string, terms: string[]): string[] {
  */
 export function prefilter(release: Release): PrefilterResult {
   const text = `${release.title}\n${release.summary}\n${release.corp}`;
+
+  // あいぱく関連は最優先で拾う。発売告知でなくても情報として見たいため、
+  // 除外語・発売告知語の判定はどちらも飛ばす。
+  const watchHits = found(text, WATCH_TERMS);
+  if (watchHits.length > 0) {
+    return {
+      passed: true,
+      watch: true,
+      reason: `あいぱく関連: ${watchHits.join(", ")}`,
+      hits: watchHits,
+    };
+  }
 
   const excluded = found(text, EXCLUDE_TERMS);
   const strong = [...found(text, STRONG_ICE_TERMS), ...found(text, ICE_BRANDS)];

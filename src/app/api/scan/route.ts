@@ -215,10 +215,15 @@ export async function GET(request: NextRequest) {
     // ---- 4. 無料の事前フィルタ ----
     const candidates: Release[] = [];
     const rejectedGuids: string[] = [];
+    // あいぱく関連は通常の関門を飛ばして通しているので、
+    // あとで「自動投稿しない」を確実に効かせるために覚えておく。
+    const watchGuids = new Set<string>();
     for (const r of unknown) {
       const pf = prefilter(r);
-      if (pf.passed) candidates.push(r);
-      else rejectedGuids.push(r.guid);
+      if (pf.passed) {
+        candidates.push(r);
+        if (pf.watch) watchGuids.add(r.guid);
+      } else rejectedGuids.push(r.guid);
     }
     log.candidates = candidates.length;
     log.skipped = rejectedGuids.length;
@@ -234,7 +239,7 @@ export async function GET(request: NextRequest) {
       log.notes.push(
         `アイス語を含む新規記事 ${iceMentioned.length}件 → 候補 ${candidates.length}件`
       );
-      // 通らなかったものは理由つきで出す。フィルタ調整の material になる
+      // 通らなかったものは理由つきで出す。フィルタ調整の材料になる
       for (const r of iceMentioned) {
         const pf = prefilter(r);
         if (!pf.passed) {
@@ -276,13 +281,50 @@ export async function GET(request: NextRequest) {
         const extraction = await classifyAndCompose(release, bodyText);
         log.classified++;
 
+        const isWatch = watchGuids.has(release.guid);
+
         if (!extraction.is_ice_cream_new_product) {
-          if (!dryRun) await markHandled([release.guid]);
+          if (!isWatch) {
+            if (!dryRun) await markHandled([release.guid]);
+            details.push({
+              guid: release.guid,
+              title: release.title,
+              action: "対象外",
+              reason: extraction.reason,
+            });
+            continue;
+          }
+          // あいぱく関連は新商品告知でなくても情報として残す。
+          // 投稿文は作らない（新商品でないとき Claude は空を返す）。
+          // 見出しとURLだけ渡して、出すかどうかと文面は人が決める。
+          const notice: QueuedItem = {
+            guid: release.guid,
+            title: release.title,
+            link: release.link,
+            corp: release.corp,
+            publishedAt: release.publishedAt,
+            imageUrl: release.imageUrl || detail?.ogImage,
+            releaseDate: "",
+            productName: "",
+            maker: release.corp,
+            price: "",
+            region: "",
+            text: `${release.title}\n${release.link}`,
+            blocking: [],
+            warnings: [
+              "あいぱく関連の記事です（新商品の告知ではありません）。文面は書き足してください。",
+            ],
+            sourceExcerpt: sourceText.slice(0, 4000),
+            createdAt: new Date().toISOString(),
+          };
+          if (!dryRun) {
+            await enqueue("review", notice);
+            log.queued++;
+          }
           details.push({
             guid: release.guid,
             title: release.title,
-            action: "対象外",
-            reason: extraction.reason,
+            action: "あいぱく関連として承認待ちへ",
           });
           continue;
         }
@@ -296,6 +338,12 @@ export async function GET(request: NextRequest) {
           check.warnings.push(
             `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）`
           );
+          check.autoPostable = false;
+        }
+
+        // あいぱく関連は、新商品告知として成立していても自動投稿しない。
+        if (check.autoPostable && isWatch) {
+          check.warnings.push("あいぱく関連の記事のため確認が必要です");
           check.autoPostable = false;
         }
 

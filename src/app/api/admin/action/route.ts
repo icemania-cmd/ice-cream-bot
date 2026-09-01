@@ -10,6 +10,7 @@ import {
   getQueued,
   markPosted,
   recordPost,
+  recordFeedback,
   reject,
   rememberPostedProduct,
   releaseClaim,
@@ -53,6 +54,20 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === "reject") {
+      // なぜ出さなかったのかを残す。ここを捨てると、フィルタもプロンプトも
+      // 「なんとなく」でしか直せなくなる。
+      await recordFeedback({
+        guid,
+        kind: "reject",
+        title: item.title,
+        link: item.link,
+        corp: item.corp,
+        topicType: item.topicType,
+        productName: item.productName,
+        reason: typeof body.reason === "string" ? body.reason.slice(0, 40) : "",
+        memo: typeof body.memo === "string" ? body.memo.slice(0, 500) : "",
+        draftText: item.text,
+      }).catch(() => undefined); // 記録の失敗で却下操作を止めない
       await reject(guid);
       return NextResponse.json({ ok: true, action: "却下しました" });
     }
@@ -140,6 +155,23 @@ export async function POST(request: NextRequest) {
         },
         { status: 502 }
       );
+    }
+
+    // 承認前に文面を書き換えていたら、その差分を残す。
+    // Claude の下書きと実際に世に出した文の差そのもので、
+    // 文体を直すときの材料として一番あてになる。
+    if (text !== item.text) {
+      await recordFeedback({
+        guid,
+        kind: "edit",
+        title: item.title,
+        link: item.link,
+        corp: item.corp,
+        topicType: item.topicType,
+        productName: item.productName,
+        draftText: item.text,
+        finalText: text,
+      }).catch(() => undefined);
     }
 
     await rememberPostedProduct(item.productName);

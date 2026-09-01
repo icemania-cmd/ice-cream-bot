@@ -36,6 +36,7 @@ const K = {
   ready: "v2:ready",
   rejected: "v2:rejected",
   runs: "v2:runs",
+  feedback: "v2:feedback",
   lastPost: "v2:lastpost",
   daily: (jstDate: string) => `v2:daily:${jstDate}`,
   postItem: (guid: string) => `v2:post:${guid}`,
@@ -176,6 +177,71 @@ export interface QueuedItem {
   /** 照合に使った原文の抜粋。管理画面で目視突き合わせできるようにする。 */
   sourceExcerpt: string;
   createdAt: string;
+  /** 記事の種類（new_product / store / event / collab）。見送りの集計に使う */
+  topicType?: string;
+}
+
+/**
+ * 人の判断の記録。
+ *
+ * これまで却下は guid を捨てるだけで、なぜ却下したのかが残っていなかった。
+ * 「なぜ出さなかったか」は、フィルタとプロンプトを直すための一次資料になる。
+ * 承認前に文面を書き換えたときの「元の文 → 直した文」も同じ理由で残す。
+ * これは Claude の出力と、実際に世に出す文の差そのもので、
+ * 手に入る改善材料としては最も質が高い。
+ */
+export interface FeedbackRecord {
+  id: string;
+  guid: string;
+  kind: "reject" | "edit";
+  at: string;
+  title: string;
+  link: string;
+  corp: string;
+  topicType?: string;
+  productName?: string;
+  /** 却下のとき。定型の理由コード */
+  reason?: string;
+  /** 却下のとき。自由記述 */
+  memo?: string;
+  /** Claude が書いた文面 */
+  draftText?: string;
+  /** 実際に投稿した文面（編集したとき） */
+  finalText?: string;
+}
+
+const TTL_FEEDBACK_DAYS = 180;
+const feedbackKey = (id: string) => `v2:fb:${id}`;
+
+export async function recordFeedback(
+  rec: Omit<FeedbackRecord, "id" | "at">
+): Promise<void> {
+  const now = Date.now();
+  const id = `${rec.kind}:${now}:${Math.random().toString(36).slice(2, 8)}`;
+  const full: FeedbackRecord = { ...rec, id, at: new Date().toISOString() };
+  const pipe = redis.pipeline();
+  pipe.zadd(K.feedback, { score: now, member: id });
+  pipe.set(feedbackKey(id), JSON.stringify(full), {
+    ex: TTL_FEEDBACK_DAYS * 86400,
+  });
+  await pipe.exec();
+}
+
+/** 新しい順に取り出す */
+export async function listFeedback(limit = 200): Promise<FeedbackRecord[]> {
+  const ids = await redis.zrange<string[]>(K.feedback, 0, limit - 1, {
+    rev: true,
+  });
+  if (!ids || ids.length === 0) return [];
+  const pipe = redis.pipeline();
+  for (const id of ids) pipe.get(feedbackKey(id));
+  const raws = (await pipe.exec()) as unknown[];
+  const out: FeedbackRecord[] = [];
+  for (const raw of raws) {
+    const v = parse<FeedbackRecord>(raw);
+    if (v) out.push(v);
+  }
+  return out;
 }
 
 export async function enqueue(q: QueueName, item: QueuedItem): Promise<void> {
@@ -440,6 +506,7 @@ export async function pruneOldEntries(): Promise<void> {
   const pipe = redis.pipeline();
   pipe.zremrangebyscore(K.posted, 0, now - TTL_POSTED_DAYS * DAY);
   pipe.zremrangebyscore(K.rejected, 0, now - TTL_POSTED_DAYS * DAY);
+  pipe.zremrangebyscore(K.feedback, 0, now - TTL_FEEDBACK_DAYS * DAY);
   pipe.zremrangebyscore(K.review, 0, now - TTL_REVIEW_DAYS * DAY);
   pipe.zremrangebyscore(K.ready, 0, now - 3 * DAY);
   await pipe.exec();

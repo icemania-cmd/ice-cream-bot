@@ -96,6 +96,22 @@ function urlBase64ToArrayBuffer(base64: string): ArrayBuffer {
   return buffer;
 }
 
+/**
+ * 却下の理由。
+ * 自由記述だけにすると集計できず、選択肢だけにすると実態が落ちる。
+ * 定型を選んでもらい、必要なら一言添えてもらう形にする。
+ */
+const REJECT_REASONS: { code: string; label: string }[] = [
+  { code: "not_ice", label: "アイスじゃない" },
+  { code: "not_new", label: "新商品じゃない・既出" },
+  { code: "wrong_facts", label: "情報が間違っている" },
+  { code: "bad_text", label: "文面が良くない" },
+  { code: "low_interest", label: "話題性が低い" },
+  { code: "duplicate", label: "重複（投稿済み）" },
+  { code: "timing", label: "タイミングが悪い" },
+  { code: "other", label: "その他" },
+];
+
 type PushState =
   | "checking"
   | "unsupported"
@@ -405,12 +421,13 @@ export default function AdminPage() {
     queue: "review" | "ready",
     action: "approve" | "reject",
     text?: string,
+    reason?: string,
+    memo?: string,
     confirmDuplicate = false
   ) {
-    if (!confirmDuplicate) {
-      if (action === "reject" && !confirm(`却下します:\n${item.title}`)) return;
-      if (action === "approve" && !confirm(`このままXへ投稿します:\n\n${text}`))
-        return;
+    // 却下はカード側で理由を選ばせているので、ここでの確認は挟まない
+    if (!confirmDuplicate && action === "approve") {
+      if (!confirm(`このままXへ投稿します:\n\n${text}`)) return;
     }
 
     setLoading(true);
@@ -427,6 +444,8 @@ export default function AdminPage() {
           queue,
           action,
           text,
+          reason,
+          memo,
           confirmDuplicate,
         }),
       });
@@ -436,7 +455,7 @@ export default function AdminPage() {
       if (res.status === 409 && json.needsConfirm) {
         setLoading(false);
         if (confirm(json.error)) {
-          await act(item, queue, action, text, true);
+          await act(item, queue, action, text, reason, memo, true);
         } else {
           setMessage("投稿を取りやめました");
         }
@@ -816,12 +835,16 @@ function ReviewCard({
     item: QueuedItem,
     queue: "review" | "ready",
     action: "approve" | "reject",
-    text?: string
+    text?: string,
+    reason?: string,
+    memo?: string
   ) => void;
   busy: boolean;
 }) {
   const [text, setText] = useState(item.text);
   const [showSource, setShowSource] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [memo, setMemo] = useState("");
   const weight = tweetWeight(text);
   const over = weight > 280;
 
@@ -948,21 +971,76 @@ function ReviewCard({
           承認してXへ投稿
         </button>
         <button
-          onClick={() => onAct(item, queue, "reject")}
+          onClick={() => setRejecting((v) => !v)}
           disabled={busy}
           style={{
             padding: "14px 22px",
             minHeight: 48,
             borderRadius: 8,
-            border: `1px solid ${C.border}`,
+            border: `1px solid ${rejecting ? C.danger : C.border}`,
             background: C.card,
             color: C.danger,
             cursor: "pointer",
           }}
         >
-          却下
+          {rejecting ? "やめる" : "却下"}
         </button>
       </div>
+
+      {rejecting && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: 14,
+            border: `1px solid ${C.border}`,
+            borderRadius: 8,
+          }}
+        >
+          <div style={{ fontSize: 13, color: C.sub, marginBottom: 10 }}>
+            見送る理由を選んでください（あとで傾向を見て、拾い方や文面を直します）
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {REJECT_REASONS.map((r) => (
+              <button
+                key={r.code}
+                onClick={() =>
+                  onAct(item, queue, "reject", undefined, r.code, memo)
+                }
+                disabled={busy}
+                style={{
+                  padding: "10px 14px",
+                  minHeight: 44,
+                  borderRadius: 8,
+                  border: `1px solid ${C.border}`,
+                  background: C.bg,
+                  color: "#e8eaed",
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+          <input
+            value={memo}
+            onChange={(e) => setMemo(e.target.value)}
+            placeholder="ひとこと（任意）例: 価格が本文と違う / 表現が硬い"
+            style={{
+              marginTop: 10,
+              width: "100%",
+              padding: "10px 12px",
+              minHeight: 44,
+              borderRadius: 8,
+              border: `1px solid ${C.border}`,
+              background: C.bg,
+              color: "#e8eaed",
+              fontSize: 14,
+              boxSizing: "border-box",
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }

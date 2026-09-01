@@ -348,6 +348,7 @@ export async function GET(request: NextRequest) {
             ].filter(Boolean),
             sourceExcerpt: sourceText.slice(0, 4000),
             createdAt: new Date().toISOString(),
+            topicType: extraction.topic_type,
           };
           if (!dryRun) {
             await enqueue("review", notice);
@@ -410,6 +411,7 @@ export async function GET(request: NextRequest) {
           warnings: check.warnings,
           sourceExcerpt: sourceText.slice(0, 4000),
           createdAt: new Date().toISOString(),
+          topicType: extraction.topic_type,
         };
 
         if (dryRun) {

@@ -8,6 +8,7 @@ import { fetchReleaseDetail, fetchReleases, type Release } from "@/lib/prtimes";
 import { prefilter } from "@/lib/filter";
 import { classifyAndCompose } from "@/lib/classify";
 import { verifyPost } from "@/lib/verify";
+import { isAutoPostPublisher } from "@/lib/trust";
 import { postTweet, uploadMedia } from "@/lib/x";
 import {
   acquireRunLock,
@@ -294,6 +295,16 @@ export async function GET(request: NextRequest) {
         if (twin) {
           check.warnings.push(
             `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）`
+          );
+          check.autoPostable = false;
+        }
+
+        // 事実照合を通っても、自動投稿は大手の流通・メーカーの配信に限る。
+        // 中小・地方メーカーはリリースの書式が不揃いで、照合を通っても
+        // 読むと違和感が残ることがある。件数も多くないので目視の負担は小さい。
+        if (check.autoPostable && !isAutoPostPublisher(release.corp)) {
+          check.warnings.push(
+            `自動投稿の対象外の配信元のため確認が必要です（配信元: ${release.corp || "不明"}）`
           );
           check.autoPostable = false;
         }

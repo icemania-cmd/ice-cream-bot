@@ -221,6 +221,26 @@ export async function GET(request: NextRequest) {
     }
     log.candidates = candidates.length;
     log.skipped = rejectedGuids.length;
+
+    // 「候補0」が続いたとき、アイスのニュースが無いのか、
+    // フィルタが落としているのかを、ログだけで切り分けられるようにする。
+    const iceMentioned = unknown.filter((r) =>
+      /アイス|ジェラート|ソフトクリーム|かき氷|氷菓|シャーベット|冷菓/.test(
+        `${r.title}${r.summary}`
+      )
+    );
+    if (iceMentioned.length > 0) {
+      log.notes.push(
+        `アイス語を含む新規記事 ${iceMentioned.length}件 → 候補 ${candidates.length}件`
+      );
+      // 通らなかったものは理由つきで出す。フィルタ調整の material になる
+      for (const r of iceMentioned) {
+        const pf = prefilter(r);
+        if (!pf.passed) {
+          log.notes.push(`除外「${r.title.slice(0, 40)}」: ${pf.reason}`);
+        }
+      }
+    }
     // 落としたものは印を付けて二度と処理しない（dry-run では状態を汚さない）
     if (!dryRun && rejectedGuids.length > 0) await markHandled(rejectedGuids);
 

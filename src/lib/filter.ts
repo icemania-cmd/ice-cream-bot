@@ -69,6 +69,19 @@ const ICE_COMPANIES = [
  */
 const WEAK_ICE_TERMS = ["アイス", "氷", "フローズン", "冷菓", "ひんやり"];
 
+/**
+ * タイトルに出ていれば、それだけで候補にしてよい語。
+ *
+ * 商品名にこれらが入っている告知は、まずアイスの発売告知だと考えてよい。
+ * 実際に「縁結びのご塩アイス 万福のお芋」（静岡木工・2026-09-01）を
+ * 「文脈語が1つしかない」という理由で取りこぼした。
+ * 大手以外ほど要約が短く、文脈語が揃わないため、この規則が無いと
+ * 中小・地方メーカーの商品ばかりが網から漏れる。
+ *
+ * 「氷」「ひんやり」は氷点下・製氷など無関係な語に当たりやすいので入れない。
+ */
+const TITLE_ICE_TERMS = ["アイス", "冷菓", "フローズン"];
+
 /** 弱い語を後押しする文脈語（食品・冷凍・味まわり） */
 const CONTEXT_TERMS = [
   "バニラ",
@@ -116,19 +129,25 @@ const EXCLUDE_TERMS = [
   "アイスピック",
 ];
 
-/** 新商品・発売の告知であることを示す語 */
+/**
+ * 新商品・発売の告知であることを示す語。
+ *
+ * 狭く書くと取りこぼす。「縁結びのご塩アイス」（静岡木工）は
+ * 「販売いたします」「秋季限定」という書き方で、
+ * `発売` `期間限定` しか見ていなかった旧リストから漏れた。
+ * 語幹で持ち、限定・販売は接頭辞を問わず拾う。
+ */
 const LAUNCH_TERMS = [
   "新発売",
   "新商品",
   "発売",
+  "販売",   // 販売いたします／販売開始／発売中
+  "限定",   // 期間限定／数量限定／秋限定／季節限定／店舗限定
   "登場",
+  "新作",
   "リニューアル",
   "新フレーバー",
-  "新登場",
-  "販売開始",
-  "数量限定",
-  "期間限定",
-  "先行販売",
+  "先行",
 ];
 
 /** 明らかに新商品告知ではないものを落とす */
@@ -188,13 +207,19 @@ export function prefilter(release: Release): PrefilterResult {
     if (company.length > 0) {
       iceHits = company;
     } else {
-      const weak = found(text, WEAK_ICE_TERMS);
-      const ctx = found(text, CONTEXT_TERMS);
-      // 弱い語は文脈語2つ以上とセットのときだけ通す
-      if (weak.length > 0 && ctx.length >= 2) {
-        iceHits = [...weak, ...ctx];
+      // タイトルに「アイス」等が入っていれば、それだけで候補にする
+      const inTitle = found(release.title, TITLE_ICE_TERMS);
+      if (inTitle.length > 0) {
+        iceHits = inTitle;
       } else {
-        return { passed: false, reason: "アイス関連語なし", hits: [] };
+        const weak = found(text, WEAK_ICE_TERMS);
+        const ctx = found(text, CONTEXT_TERMS);
+        // 本文だけに出る弱い語は、文脈語とセットのときに通す
+        if (weak.length > 0 && ctx.length >= 1) {
+          iceHits = [...weak, ...ctx];
+        } else {
+          return { passed: false, reason: "アイス関連語なし", hits: [] };
+        }
       }
     }
   }

@@ -2,6 +2,7 @@ import {
   BROWSER_UA,
   COMPANY_FEEDS,
   FIREHOSE_URL,
+  ATPRESS_FEED_URL,
   companyFeedUrl,
 } from "./config";
 
@@ -216,6 +217,8 @@ export interface FetchReport {
   freshnessMinutes: number | null;
   /** 主ソースの最新記事の配信時刻 */
   newestAt: string | null;
+  /** 配信元ごとの鮮度（分）。どちらのフィードが止まったのか切り分けるため */
+  freshnessBySource: { source: string; minutes: number | null }[];
 }
 
 /**
@@ -227,6 +230,8 @@ export async function fetchReleases(
 ): Promise<FetchReport> {
   const targets: { url: string; source: string; timeout: number }[] = [
     { url: FIREHOSE_URL, source: "firehose", timeout: 12000 },
+    // PR TIMES を使わないメーカーがあるため @Press も主ソースとして常に見る
+    { url: ATPRESS_FEED_URL, source: "atpress", timeout: 12000 },
   ];
   if (includeCompanyFeeds) {
     for (const c of COMPANY_FEEDS) {
@@ -264,14 +269,31 @@ export async function fetchReleases(
   );
 
   // フィードの鮮度。ここが数時間ぶん遅れていたら配信側かCDNのキャッシュを疑う。
-  const firehose = releases.filter((r) => r.source === "firehose");
-  const newest = firehose.length > 0 ? firehose[0].publishedAt : null;
-  const newestMs = newest ? new Date(newest).getTime() : NaN;
-  const freshnessMinutes = Number.isFinite(newestMs)
-    ? Math.round((Date.now() - newestMs) / 60000)
-    : null;
+  // 主ソースが2本あるので、片方だけ止まった場合に分かるよう別々に出す。
+  const minutesOf = (src: string): { minutes: number | null; at: string | null } => {
+    const of = releases.filter((r) => r.source === src);
+    const at = of.length > 0 ? of[0].publishedAt : null;
+    const ms = at ? new Date(at).getTime() : NaN;
+    return {
+      minutes: Number.isFinite(ms) ? Math.round((Date.now() - ms) / 60000) : null,
+      at,
+    };
+  };
+  const prtimes = minutesOf("firehose");
+  const atpress = minutesOf("atpress");
+  const freshnessBySource = [
+    { source: "PR TIMES", minutes: prtimes.minutes },
+    { source: "@Press", minutes: atpress.minutes },
+  ];
 
-  return { releases, feedsOk, feedsFailed, freshnessMinutes, newestAt: newest };
+  return {
+    releases,
+    feedsOk,
+    feedsFailed,
+    freshnessMinutes: prtimes.minutes,
+    newestAt: prtimes.at,
+    freshnessBySource,
+  };
 }
 
 // ===== 記事ページの詳細取得 =====
@@ -322,8 +344,13 @@ export async function fetchReleaseDetail(
     // PR TIMES の og:site_name は「…｜PR TIMES」で会社名にならない。
     // <title> の「｜○○のプレスリリース」から配信元を取る。
     const titleTag = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "";
+    const cleanTitle = decodeEntities(titleTag);
     const ogSiteName =
-      decodeEntities(titleTag).match(/[|｜]\s*([^|｜]+?)のプレスリリース/)?.[1]?.trim() ||
+      cleanTitle.match(/[|｜]\s*([^|｜]+?)のプレスリリース/)?.[1]?.trim() ||
+      // @Press は「タイトル | 会社名」。末尾の区切り以降を配信元として扱う。
+      (/atpress\.ne\.jp/.test(link)
+        ? cleanTitle.split(/[|｜]/).pop()?.trim()
+        : undefined) ||
       metaContent(html, "og:site_name");
 
     // 本文らしき領域を優先的に切り出し、取れなければ全体から抜く

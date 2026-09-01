@@ -25,6 +25,7 @@ export const dynamic = "force-dynamic";
  * Claudeの判定と事実照合は通常どおり行う。
  *
  *   POST { url: "https://prtimes.jp/main/html/rd/p/..." }
+ *   POST { url: "https://www.atpress.ne.jp/news/..." }
  */
 export async function POST(request: NextRequest) {
   if (!isAdmin(request)) {
@@ -34,9 +35,12 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const target: string = body.url;
-    if (!target || !/^https:\/\/prtimes\.jp\//.test(target)) {
+    const allowed = /^https:\/\/(prtimes\.jp|www\.atpress\.ne\.jp)\//.test(
+      target || ""
+    );
+    if (!target || !allowed) {
       return NextResponse.json(
-        { error: "PR TIMES の記事URLを url で指定してください" },
+        { error: "PR TIMES または @Press の記事URLを url で指定してください" },
         { status: 400 }
       );
     }

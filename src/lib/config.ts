@@ -7,6 +7,13 @@
 export const FIREHOSE_URL = "https://prtimes.jp/index.rdf";
 
 /**
+ * @Press の全社フィード。
+ * クラシエ・ブルボンなど、PR TIMES を使わずここで配信するメーカーがある。
+ * robots.txt で /rss/ は許可されていることを確認済み（2026-09-01）。
+ */
+export const ATPRESS_FEED_URL = "https://www.atpress.ne.jp/rss/index.rdf";
+
+/**
  * 保険用の企業別フィード。
  * ファイアホースは約2時間分しか遡れないため、デプロイ停止や障害で
  * 取りこぼしたときにここが拾い直す。10分おきスキャンなら通常は不要。

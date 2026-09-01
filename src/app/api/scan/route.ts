@@ -181,20 +181,31 @@ export async function GET(request: NextRequest) {
     }
 
     // ---- 2. 収集 ----
-    const { releases, feedsOk, feedsFailed, freshnessMinutes, newestAt } =
-      await fetchReleases(deep);
+    const {
+      releases,
+      feedsOk,
+      feedsFailed,
+      freshnessMinutes,
+      newestAt,
+      freshnessBySource,
+    } = await fetchReleases(deep);
     log.fetched = releases.length;
 
     // フィードが止まっていないかを毎回記録する。
     // 速報botなので、ここが数時間遅れていたら投稿件数以前の問題になる。
     if (freshnessMinutes !== null) {
-      log.notes.push(
-        `フィード最新: ${newestAt}（${freshnessMinutes}分前）`
-      );
-      if (freshnessMinutes > 90) {
+      log.notes.push(`フィード最新: ${newestAt}（${freshnessMinutes}分前）`);
+    }
+    // 主ソースは2本ある。片方だけ止まったときに切り分けられるよう別々に見る。
+    for (const f of freshnessBySource) {
+      if (f.minutes === null) {
+        log.errors.push(`${f.source} から1件も取得できていません`);
+      } else if (f.minutes > 90) {
         log.errors.push(
-          `フィードが${freshnessMinutes}分前で止まっています。配信側またはCDNのキャッシュを疑ってください`
+          `${f.source} が${f.minutes}分前で止まっています。配信側またはCDNのキャッシュを疑ってください`
         );
+      } else {
+        log.notes.push(`${f.source}: ${f.minutes}分前`);
       }
     }
     for (const f of feedsFailed) {

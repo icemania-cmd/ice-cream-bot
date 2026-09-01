@@ -32,6 +32,7 @@ import {
   getRateStatus,
   jstDateString,
   listQueue,
+  getStyleSamples,
   markHandled,
   markPosted,
   pruneOldEntries,
@@ -295,6 +296,13 @@ export async function GET(request: NextRequest) {
     // かかりうるため、余裕を持って打ち切る。途中で殺されると Claude の課金だけ
     // 発生して結果が残らないため、これは費用対策でもある。
     const TIME_BUDGET_MS = 200_000;
+
+    // 文体の見本はこのスキャンで共通。記事ごとに取るとコマンドが無駄に増える。
+    const styleSamples =
+      toClassify.length > 0 ? await getStyleSamples() : [];
+    if (styleSamples.length > 0) {
+      log.notes.push(`文体の見本: 実際の投稿${styleSamples.length}本を使用`);
+    }
     for (const release of toClassify) {
       if (Date.now() - startedAt > TIME_BUDGET_MS) {
         log.notes.push("実行時間の予算に達したため、残りは次回に回します");
@@ -305,7 +313,11 @@ export async function GET(request: NextRequest) {
         const bodyText = detail?.bodyText || "";
         const sourceText = `${release.title}\n${release.corp}\n${release.summary}\n${bodyText}`;
 
-        const extraction = await classifyAndCompose(release, bodyText);
+        const extraction = await classifyAndCompose(
+          release,
+          bodyText,
+          styleSamples
+        );
         log.classified++;
 
         const isWatch = watchGuids.has(release.guid);

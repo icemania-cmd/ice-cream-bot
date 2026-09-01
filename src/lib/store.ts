@@ -210,6 +210,39 @@ export interface FeedbackRecord {
   finalText?: string;
 }
 
+/**
+ * 文体の見本。
+ *
+ * Claude が書いた下書きではなく「実際に世に出した文」だけを保持する。
+ * 下書きを混ぜると、直す前の癖ごと学ばせることになる。
+ *
+ * LIST に LPUSH + LTRIM で保持数を書き込み時に固定する。
+ * 読むときは LRANGE 1回で済み、スキャンごとのコマンドが増えない。
+ */
+const STYLE_KEY = "v2:style";
+export const STYLE_KEEP = 3;
+
+export async function rememberStyleSample(text: string): Promise<void> {
+  const t = (text || "").trim();
+  if (!t) return;
+  const pipe = redis.pipeline();
+  pipe.lpush(STYLE_KEY, t);
+  // 感覚は変わっていくので、古い文に引きずられないよう新しい順に3本だけ残す
+  pipe.ltrim(STYLE_KEY, 0, STYLE_KEEP - 1);
+  await pipe.exec();
+}
+
+export async function getStyleSamples(): Promise<string[]> {
+  try {
+    const v = await redis.lrange<string>(STYLE_KEY, 0, STYLE_KEEP - 1);
+    if (!Array.isArray(v)) return [];
+    return v.filter((t) => typeof t === "string" && t.trim().length > 0);
+  } catch {
+    // 見本が取れなくても判定は続ける。固定の見本で動く。
+    return [];
+  }
+}
+
 const TTL_FEEDBACK_DAYS = 180;
 const feedbackKey = (id: string) => `v2:fb:${id}`;
 

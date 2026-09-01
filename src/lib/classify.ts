@@ -136,11 +136,29 @@ const CLOSING_PATTERNS = [
   "「絶対に押さえておきたい一本」",
 ];
 
-function buildPrompt(release: Release, bodyText: string): string {
+function buildPrompt(
+  release: Release,
+  bodyText: string,
+  styleSamples: string[]
+): string {
   // 締めの型は毎回シャッフルして渡す。固定順で渡すと上から選びがちで表現が偏る。
   const closings = [...CLOSING_PATTERNS]
     .sort(() => Math.random() - 0.5)
     .slice(0, 5);
+
+  // 実際に投稿した文があればそれを見本にする。
+  // 承認前に手を入れた文は、本人の感覚そのものなので固定の見本より近い。
+  // 無い間は、過去の実投稿から作った固定の見本を使う。
+  const samples =
+    styleSamples.length > 0
+      ? `【文体の見本】（あなたが実際に投稿した直近の文。この温度感と情報の並べ方に寄せる）\n` +
+        styleSamples.map((t) => t.trim()).join("\n\n")
+      : `【文体の見本】（この温度感と情報の並べ方に寄せる）
+${POST_PREFIX}ホワイトチョコ版が2年ぶりに帰ってきた!! 森永製菓『白い板チョコアイス』が9/21(月)より全国発売。今年からは期間限定ではなく秋冬の定番に昇格。ザクザクのクッキークランチ入りホワイトチョコに、なめらかバニラ。価格：216円（税込）
+
+${POST_PREFIX}PARMから期間限定の新作。森永乳業『PARM キャラメルヴァニーユ』が9/7(月)発売。キャラメルバニラアイスをホワイトチョコでコーティング、中には岩塩を効かせた濃厚キャラメルソース。価格：190円（税別）。パルム好きはお見逃しなく
+
+${POST_PREFIX}赤城乳業『ミルクレア』にポケモンパッケージが登場。濃厚生キャラメル → 8/31(月)発売、ベルギーチョコレートは8月下旬より順次。10周年×ポケモン30周年の数量限定デザイン。価格：486円（税込）、販売エリア＝全国`;
 
   return `あなたはアイスクリーム評論家「アイスマン福留」（@icemania）です。
 PR TIMES のプレスリリースを読み、(1) それがアイスの発売告知かを判定し、(2) 該当する場合はご自身の X アカウントに投稿する本文を作成します。
@@ -182,12 +200,7 @@ store / event / collab は投稿文を作りません（post_text は空文字�
 - 情報の羅列にせず、アイスマン福留の視点を一言添える。ただし今回は簡潔さを優先する
 - 末尾の呼びかけは次のいずれかの型から選び、商品に合わせて埋める: ${closings.join(" / ")}
 
-【文体の見本】（この温度感と情報の並べ方に寄せる）
-${POST_PREFIX}ホワイトチョコ版が2年ぶりに帰ってきた!! 森永製菓『白い板チョコアイス』が9/21(月)より全国発売。今年からは期間限定ではなく秋冬の定番に昇格。ザクザクのクッキークランチ入りホワイトチョコに、なめらかバニラ。価格：216円（税込）
-
-${POST_PREFIX}PARMから期間限定の新作。森永乳業『PARM キャラメルヴァニーユ』が9/7(月)発売。キャラメルバニラアイスをホワイトチョコでコーティング、中には岩塩を効かせた濃厚キャラメルソース。価格：190円（税別）。パルム好きはお見逃しなく
-
-${POST_PREFIX}赤城乳業『ミルクレア』にポケモンパッケージが登場。濃厚生キャラメル → 8/31(月)発売、ベルギーチョコレートは8月下旬より順次。10周年×ポケモン30周年の数量限定デザイン。価格：486円（税込）、販売エリア＝全国
+${samples}
 
 【プレスリリース】
 配信企業: ${release.corp}
@@ -208,14 +221,21 @@ report ツールを使って結果を報告してください。`;
  */
 export async function classifyAndCompose(
   release: Release,
-  bodyText: string
+  bodyText: string,
+  /**
+   * 文体の見本。呼び出し側が1回だけ取って全件に使い回す。
+   * ここで毎回取ると、記事1件ごとに Redis を叩くことになる。
+   */
+  styleSamples: string[] = []
 ): Promise<Extraction> {
   const message = await anthropic.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 1200,
     tools: [REPORT_TOOL],
     tool_choice: { type: "tool", name: "report" },
-    messages: [{ role: "user", content: buildPrompt(release, bodyText) }],
+    messages: [
+      { role: "user", content: buildPrompt(release, bodyText, styleSamples) },
+    ],
   });
 
   const toolUse = message.content.find(

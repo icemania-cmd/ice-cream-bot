@@ -3,7 +3,7 @@ import { fetchReleaseDetail, type Release } from "@/lib/prtimes";
 import { prefilter } from "@/lib/filter";
 import { classifyAndCompose } from "@/lib/classify";
 import { verifyPost } from "@/lib/verify";
-import { jstDateString } from "@/lib/store";
+import { getStyleSamples, jstDateString } from "@/lib/store";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -66,7 +66,13 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const extraction = await classifyAndCompose(release, detail.bodyText);
+  // 本番と同じ見本で試せるようにする。ここが違うと試験の意味が薄れる。
+  const styleSamples = await getStyleSamples();
+  const extraction = await classifyAndCompose(
+    release,
+    detail.bodyText,
+    styleSamples
+  );
 
   if (!extraction.is_ice_cream_new_product) {
     return NextResponse.json({

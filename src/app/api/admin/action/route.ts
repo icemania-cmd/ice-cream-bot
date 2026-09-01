@@ -11,6 +11,7 @@ import {
   markPosted,
   recordPost,
   recordFeedback,
+  rememberStyleSample,
   reject,
   rememberPostedProduct,
   releaseClaim,
@@ -172,6 +173,18 @@ export async function POST(request: NextRequest) {
         draftText: item.text,
         finalText: text,
       }).catch(() => undefined);
+    }
+
+    // 実際に世に出した文を、次回以降の文体の見本にする。
+    // 発売告知だけを対象にする。出店・イベントの告知は形式が違うので、
+    // 混ぜると発売告知の文面が崩れる。
+    // topicType が無いのは、この仕組みを入れる前に積まれた項目。
+    // 商品名が入っていれば発売告知として扱ってよい。
+    const isProductPost = item.topicType
+      ? item.topicType === "new_product"
+      : Boolean(item.productName);
+    if (isProductPost) {
+      await rememberStyleSample(text).catch(() => undefined);
     }
 
     await rememberPostedProduct(item.productName);

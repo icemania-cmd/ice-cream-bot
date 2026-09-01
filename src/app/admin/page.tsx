@@ -81,6 +81,29 @@ const C = {
   ok: "#7ee787",
 };
 
+/**
+ * VAPID公開鍵（base64url）を、pushManager.subscribe が受け取れる形に変える。
+ */
+function urlBase64ToArrayBuffer(base64: string): ArrayBuffer {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const normalized = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(normalized);
+  // Uint8Array で返すと TypeScript の版によって BufferSource として
+  // 受け取ってもらえないことがあるため、ArrayBuffer をそのまま返す。
+  const buffer = new ArrayBuffer(raw.length);
+  const view = new Uint8Array(buffer);
+  for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
+  return buffer;
+}
+
+type PushState =
+  | "checking"
+  | "unsupported"
+  | "unconfigured"
+  | "off"
+  | "on"
+  | "denied";
+
 export default function AdminPage() {
   const [secret, setSecret] = useState("");
   const [authed, setAuthed] = useState(false);
@@ -90,6 +113,8 @@ export default function AdminPage() {
   );
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pushState, setPushState] = useState<PushState>("checking");
+  const [pushDevices, setPushDevices] = useState(0);
 
   useEffect(() => {
     // URLのフラグメント（#k=…）から鍵を受け取る。
@@ -158,9 +183,149 @@ export default function AdminPage() {
     []
   );
 
+  /**
+   * 通知の状態を調べる。
+   * ブラウザ側（許可・購読の有無）とサーバ側（登録済み端末）の両方を見ないと、
+   * 「ONのつもりで届かない」状態に気づけない。
+   */
+  const checkPush = useCallback(async (key: string) => {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setPushState("unsupported");
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/push", {
+        headers: { "x-admin-secret": key },
+      });
+      const json = await res.json();
+      setPushDevices(json.devices ?? 0);
+      if (!json.configured) {
+        setPushState("unconfigured");
+        return;
+      }
+      if (Notification.permission === "denied") {
+        setPushState("denied");
+        return;
+      }
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      const known: string[] = json.endpoints || [];
+      setPushState(sub && known.includes(sub.endpoint) ? "on" : "off");
+    } catch {
+      setPushState("off");
+    }
+  }, []);
+
+  /** この端末を通知先として登録する */
+  async function enablePush() {
+    setLoading(true);
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        setPushState(perm === "denied" ? "denied" : "off");
+        setMessage(
+          "❌ 通知が許可されませんでした。ブラウザの設定から通知を許可してください"
+        );
+        return;
+      }
+      const keyRes = await fetch("/api/admin/push", {
+        headers: { "x-admin-secret": secret },
+      });
+      const keyJson = await keyRes.json();
+      if (!keyJson.configured) {
+        setPushState("unconfigured");
+        setMessage("❌ サーバ側のVAPID鍵が未設定です");
+        return;
+      }
+      const reg = await navigator.serviceWorker.register("/sw.js");
+      await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToArrayBuffer(keyJson.publicKey),
+        });
+      }
+      const res = await fetch("/api/admin/push", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-secret": secret,
+        },
+        body: JSON.stringify({
+          subscription: sub.toJSON(),
+          label: navigator.userAgent.slice(0, 60),
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setMessage(`❌ ${json.error}`);
+        return;
+      }
+      setPushState("on");
+      setPushDevices(json.devices ?? 1);
+      setMessage("✅ この端末に通知を送るよう登録しました");
+    } catch (e) {
+      setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** この端末への通知を止める */
+  async function disablePush() {
+    setLoading(true);
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg ? await reg.pushManager.getSubscription() : null;
+      if (sub) {
+        await fetch("/api/admin/push", {
+          method: "DELETE",
+          headers: {
+            "Content-Type": "application/json",
+            "x-admin-secret": secret,
+          },
+          body: JSON.stringify({ endpoint: sub.endpoint }),
+        });
+        await sub.unsubscribe();
+      }
+      setPushState("off");
+      setMessage("この端末への通知を止めました");
+      await checkPush(secret);
+    } catch (e) {
+      setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  /** 実際に1通送ってみる。届かない原因の切り分けはこれが一番早い。 */
+  async function testPush() {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/admin/push", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-secret": secret,
+        },
+        body: JSON.stringify({ test: true }),
+      });
+      const json = await res.json();
+      setMessage(res.ok ? `📨 ${json.message}` : `❌ ${json.error}`);
+    } catch (e) {
+      setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
-    if (authed && secret) void load(secret);
-  }, [authed, secret, load]);
+    if (authed && secret) {
+      void load(secret);
+      void checkPush(secret);
+    }
+  }, [authed, secret, load, checkPush]);
 
   /**
    * 自動投稿のON/OFFを切り替える。
@@ -373,6 +538,55 @@ export default function AdminPage() {
           >
             リンクをコピー
           </button>
+          {pushState !== "unsupported" && (
+            <button
+              onClick={() =>
+                pushState === "on" ? void disablePush() : void enablePush()
+              }
+              disabled={loading || pushState === "checking"}
+              title={
+                pushState === "unconfigured"
+                  ? "サーバ側のVAPID鍵が未設定です"
+                  : "承認待ちが増えたら、この端末に通知します"
+              }
+              style={{
+                padding: "8px 14px",
+                minHeight: 40,
+                borderRadius: 8,
+                border: `1px solid ${pushState === "on" ? C.accent : C.border}`,
+                background: C.card,
+                color: pushState === "on" ? C.accent : C.sub,
+                cursor: "pointer",
+                fontSize: 13,
+              }}
+            >
+              {pushState === "on"
+                ? `🔔 通知ON（${pushDevices}台）`
+                : pushState === "denied"
+                  ? "🔕 通知がブロック中"
+                  : pushState === "unconfigured"
+                    ? "🔕 通知は未設定"
+                    : "🔔 通知をオンにする"}
+            </button>
+          )}
+          {pushState === "on" && (
+            <button
+              onClick={() => void testPush()}
+              disabled={loading}
+              style={{
+                padding: "8px 14px",
+                minHeight: 40,
+                borderRadius: 8,
+                border: `1px solid ${C.border}`,
+                background: C.card,
+                color: C.sub,
+                cursor: "pointer",
+                fontSize: 13,
+              }}
+            >
+              テスト送信
+            </button>
+          )}
           <button
             onClick={exposeLinkForQr}
             style={{

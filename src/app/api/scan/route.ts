@@ -9,6 +9,7 @@ import { prefilter } from "@/lib/filter";
 import { classifyAndCompose } from "@/lib/classify";
 import { verifyPost } from "@/lib/verify";
 import { isAutoPostPublisher } from "@/lib/trust";
+import { notifyQueued } from "@/lib/push";
 import { postTweet, uploadMedia } from "@/lib/x";
 import {
   acquireRunLock,
@@ -78,6 +79,10 @@ export async function GET(request: NextRequest) {
   const details: Record<string, unknown>[] = [];
   const today = jstDateString();
   let postsThisRun = 0;
+  // このスキャンで人の確認待ちに積んだもの。最後にまとめて1通だけ通知する。
+  // 1件ごとに送ると、まとめて記事が出た日に通知が連打される。
+  const queuedReview: string[] = [];
+  const queuedReady: string[] = [];
 
   /** 1件を実際にXへ出す。成功したら true。 */
   async function publish(item: QueuedItem): Promise<boolean> {
@@ -320,6 +325,7 @@ export async function GET(request: NextRequest) {
           if (!dryRun) {
             await enqueue("review", notice);
             log.queued++;
+            queuedReview.push(release.title);
           }
           details.push({
             guid: release.guid,
@@ -395,10 +401,12 @@ export async function GET(request: NextRequest) {
             if (!done) {
               await enqueue("ready", item);
               log.queued++;
+              queuedReady.push(item.title);
             }
           } else {
             await enqueue("ready", item);
             log.queued++;
+            queuedReady.push(item.title);
             details.push({
               guid: release.guid,
               title: release.title,
@@ -408,6 +416,7 @@ export async function GET(request: NextRequest) {
         } else {
           await enqueue("review", item);
           log.queued++;
+          queuedReview.push(item.title);
           details.push({
             guid: release.guid,
             title: release.title,
@@ -420,6 +429,30 @@ export async function GET(request: NextRequest) {
         const msg = e instanceof Error ? e.message : String(e);
         log.errors.push(`処理エラー(${release.title}): ${msg}`);
         // markSeen しない = 次回のスキャンで自動的に再試行される
+      }
+    }
+
+    // 確認待ちが増えたらスマホへ通知する。
+    // 通知の失敗でスキャンを落とさない（投稿の可否とは無関係のため）。
+    if (!dryRun && queuedReview.length + queuedReady.length > 0) {
+      try {
+        const r = await notifyQueued({
+          review: queuedReview.length,
+          ready: queuedReady.length,
+          sampleTitle: queuedReview[0] || queuedReady[0] || "",
+        });
+        log.notes.push(
+          r.skipped
+            ? `通知は送っていません（${r.skipped}）`
+            : `通知を${r.sent}台へ送信（失効${r.expired}台${
+                r.errors.length ? ` / 失敗${r.errors.length}件` : ""
+              }）`
+        );
+        for (const e of r.errors) log.errors.push(`通知の送信に失敗: ${e}`);
+      } catch (e) {
+        log.errors.push(
+          `通知の送信に失敗: ${e instanceof Error ? e.message : String(e)}`
+        );
       }
     }
 

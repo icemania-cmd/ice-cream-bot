@@ -6,21 +6,11 @@ import {
 } from "@/lib/config";
 import { fetchReleaseDetail, fetchReleases, type Release } from "@/lib/prtimes";
 import { prefilter } from "@/lib/filter";
-import { classifyAndCompose } from "@/lib/classify";
+import { classifyAndCompose, NOTICE_TOPICS } from "@/lib/classify";
 import { verifyPost } from "@/lib/verify";
 import { isAutoPostPublisher } from "@/lib/trust";
 import { notifyQueued } from "@/lib/push";
 
-/**
- * 発売告知ではないが、人に見せる価値がある記事の種類。
- * 出店・イベント・コラボは話題性があるので拾い、承認待ちに積む。
- * 投稿するかどうかと文面は人が決める。
- */
-const NOTICE_TOPICS: Record<string, string> = {
-  store: "専門店の出店・オープン",
-  event: "イベント・催事",
-  collab: "コラボ・タイアップ",
-};
 import { postTweet, uploadMedia } from "@/lib/x";
 import {
   acquireRunLock,

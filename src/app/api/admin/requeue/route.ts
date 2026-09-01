@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAdmin } from "@/lib/auth";
 import { fetchReleaseDetail, type Release } from "@/lib/prtimes";
-import { classifyAndCompose } from "@/lib/classify";
+import { classifyAndCompose, NOTICE_TOPICS } from "@/lib/classify";
+import { isAutoPostPublisher } from "@/lib/trust";
 import { verifyPost } from "@/lib/verify";
 import {
   enqueue,
   findSimilarPostedProduct,
+  getStyleSamples,
   jstDateString,
   markHandled,
   type QueuedItem,
@@ -64,17 +66,60 @@ export async function POST(request: NextRequest) {
       source: "requeue",
     };
 
-    const extraction = await classifyAndCompose(release, detail.bodyText);
+    // 本番のスキャンと同じ見本で判定する。入口ごとに文面が変わると
+    // 「どちらが本物か」が分からなくなる。
+    const styleSamples = await getStyleSamples();
+    const extraction = await classifyAndCompose(
+      release,
+      detail.bodyText,
+      styleSamples
+    );
+
+    const sourceText = `${release.title}\n${release.corp}\n${detail.bodyText}`;
+    const noticeLabel = NOTICE_TOPICS[extraction.topic_type];
+
     if (!extraction.is_ice_cream_new_product) {
-      await markHandled([target]);
+      // 出店・イベント・コラボは、発売告知でなくても承認待ちに積む。
+      // scan と同じ扱いにしないと、拾い直したときだけ消える。
+      if (!noticeLabel) {
+        await markHandled([target]);
+        return NextResponse.json({
+          ok: false,
+          判定: "アイスの新商品ではないと判定されました",
+          理由: extraction.reason,
+        });
+      }
+      const notice: QueuedItem = {
+        guid: target,
+        title: release.title,
+        link: target,
+        corp: release.corp,
+        publishedAt: release.publishedAt,
+        imageUrl: release.imageUrl,
+        releaseDate: "",
+        productName: "",
+        maker: release.corp,
+        price: "",
+        region: "",
+        text: `${release.title}\n${target}`,
+        blocking: [],
+        warnings: [
+          `${noticeLabel}の記事です（新商品の告知ではありません）。文面は書き足してください。`,
+          extraction.reason,
+        ].filter(Boolean),
+        sourceExcerpt: sourceText.slice(0, 4000),
+        createdAt: new Date().toISOString(),
+        topicType: extraction.topic_type,
+      };
+      await enqueue("review", notice);
       return NextResponse.json({
-        ok: false,
-        判定: "アイスの新商品ではないと判定されました",
+        ok: true,
+        入れた先: "承認待ち",
+        種類: noticeLabel,
         理由: extraction.reason,
       });
     }
 
-    const sourceText = `${release.title}\n${release.corp}\n${detail.bodyText}`;
     const check = verifyPost({
       extraction,
       sourceText,
@@ -85,6 +130,15 @@ export async function POST(request: NextRequest) {
     if (twin) {
       check.warnings.push(
         `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）`
+      );
+      check.autoPostable = false;
+    }
+
+    // 自動投稿の門は scan と同じものを通す。
+    // ここを素通りさせると、拾い直した記事だけが大手限定の制限を抜ける。
+    if (check.autoPostable && !isAutoPostPublisher(release.corp)) {
+      check.warnings.push(
+        `自動投稿の対象外の配信元のため確認が必要です（配信元: ${release.corp || "不明"}）`
       );
       check.autoPostable = false;
     }
@@ -107,6 +161,7 @@ export async function POST(request: NextRequest) {
       warnings: check.warnings,
       sourceExcerpt: sourceText.slice(0, 4000),
       createdAt: new Date().toISOString(),
+      topicType: extraction.topic_type,
     };
     await enqueue(queue, item);
 

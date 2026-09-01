@@ -24,6 +24,17 @@ export type TopicType =
   | "other_ice"
   | "not_ice";
 
+/**
+ * 発売告知ではないが、人に見せる価値がある種類。
+ * ここに載る種類は、判定が通っていても必ず承認待ちに回す。
+ * scan と requeue の両方から使うので、入口ごとに扱いがずれないよう1か所に置く。
+ */
+export const NOTICE_TOPICS: Record<string, string> = {
+  store: "専門店の出店・オープン",
+  event: "イベント・催事",
+  collab: "コラボ・タイアップ",
+};
+
 export interface Extraction {
   is_ice_cream_new_product: boolean;
   topic_type: TopicType;

@@ -10,8 +10,23 @@ import type { Release } from "./prtimes";
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
+/**
+ * 記事の種類。
+ * 「発売告知かどうか」の1本だけで切ると、出店・イベント・コラボの告知が
+ * すべて捨てられる。話題性のあるものは拾って人に見せたいので、
+ * 何の記事なのかを分けて持つ。
+ */
+export type TopicType =
+  | "new_product"
+  | "store"
+  | "event"
+  | "collab"
+  | "other_ice"
+  | "not_ice";
+
 export interface Extraction {
   is_ice_cream_new_product: boolean;
+  topic_type: TopicType;
   reason: string;
   product_name: string;
   maker: string;
@@ -37,6 +52,19 @@ const REPORT_TOOL: Anthropic.Tool = {
         type: "boolean",
         description:
           "アイスクリーム・氷菓・ジェラート・ソフトクリームなど冷菓の『新商品の発売告知』であれば true。キャンペーン、イベント、コラボ企画のみ、決算、採用、既発売品の紹介、飲料や菓子など冷菓以外は false。",
+      },
+      topic_type: {
+        type: "string",
+        enum: [
+          "new_product",
+          "store",
+          "event",
+          "collab",
+          "other_ice",
+          "not_ice",
+        ],
+        description:
+          "記事の種類。new_product=冷菓の発売告知（新商品・復活・再販・リニューアル・定番昇格）。store=アイス／ソフトクリーム／ジェラート等の店の出店・オープン・期間限定出店・ポップアップ。event=アイスに関わるイベント・フェア・催事・出展。collab=冷菓のコラボ・タイアップの告知で発売告知の形になっていないもの。other_ice=それ以外でアイスに関係する話題（調査結果・受賞・応募キャンペーンなど）。not_ice=アイスと関係ない。",
       },
       reason: { type: "string", description: "その判定にした理由を一文で" },
       product_name: {
@@ -76,6 +104,7 @@ const REPORT_TOOL: Anthropic.Tool = {
     },
     required: [
       "is_ice_cream_new_product",
+      "topic_type",
       "reason",
       "product_name",
       "maker",
@@ -118,8 +147,19 @@ PR TIMES のプレスリリースを読み、(1) それがアイスの発売告�
 
 【判定の基準】
 - 対象: アイスクリーム、アイスミルク、ラクトアイス、氷菓、ジェラート、ソフトクリーム、シャーベット、かき氷などの冷菓の発売告知。新商品のほか、復活・再販・リニューアル・定番昇格も対象に含める
-- 対象外: アイスコーヒーなどの飲料、常温の菓子、既に発売中の商品の紹介のみ、キャンペーン／イベント／コラボ企画の告知のみ、店舗オープン、決算・人事・採用・調査リリース
+- 対象外: アイスコーヒーなどの飲料、常温の菓子、既に発売中の商品の紹介のみ、決算・人事・採用・調査リリース
 - 迷ったら false にしてください。誤って投稿するより、拾い損ねるほうがましです。
+
+【記事の種類】topic_type から必ず1つ選ぶ（is_ice_cream_new_product とは別に判断する）
+- new_product … 冷菓の発売告知。is_ice_cream_new_product が true になるのはこれだけ
+- store … アイス／ソフトクリーム／ジェラート等の店の出店・オープン・期間限定出店・ポップアップ
+- event … アイスに関わるイベント・フェア・催事・出展
+- collab … 冷菓のコラボ・タイアップの告知で、発売告知の形になっていないもの
+- other_ice … それ以外でアイスに関係する話題（調査結果・受賞・応募キャンペーンなど）
+- not_ice … アイスと関係ない
+
+store / event / collab は投稿文を作りません（post_text は空文字）。
+本人が見て判断するので、種類の判定だけ正確に行ってください。
 
 【投稿文の型】
 1行目: ${POST_PREFIX} に続けて、短いフックを一文。「何が起きたのか」を一息で言い切る
@@ -202,8 +242,25 @@ export async function classifyAndCompose(
     }
   }
 
+  const TOPICS: TopicType[] = [
+    "new_product",
+    "store",
+    "event",
+    "collab",
+    "other_ice",
+    "not_ice",
+  ];
+  const topic = TOPICS.includes(raw.topic_type as TopicType)
+    ? (raw.topic_type as TopicType)
+    // 未知の値が来たら、発売告知かどうかだけで機械的に決める。
+    // ここで例外を投げると1件の判定不能で記事を落とすことになる。
+    : raw.is_ice_cream_new_product === true
+      ? "new_product"
+      : "other_ice";
+
   return {
     is_ice_cream_new_product: raw.is_ice_cream_new_product === true,
+    topic_type: topic,
     reason: str(raw.reason),
     product_name: str(raw.product_name),
     maker: str(raw.maker),

@@ -10,6 +10,17 @@ import { classifyAndCompose } from "@/lib/classify";
 import { verifyPost } from "@/lib/verify";
 import { isAutoPostPublisher } from "@/lib/trust";
 import { notifyQueued } from "@/lib/push";
+
+/**
+ * 発売告知ではないが、人に見せる価値がある記事の種類。
+ * 出店・イベント・コラボは話題性があるので拾い、承認待ちに積む。
+ * 投稿するかどうかと文面は人が決める。
+ */
+const NOTICE_TOPICS: Record<string, string> = {
+  store: "専門店の出店・オープン",
+  event: "イベント・催事",
+  collab: "コラボ・タイアップ",
+};
 import { postTweet, uploadMedia } from "@/lib/x";
 import {
   acquireRunLock,
@@ -299,8 +310,10 @@ export async function GET(request: NextRequest) {
 
         const isWatch = watchGuids.has(release.guid);
 
+        const noticeLabel = NOTICE_TOPICS[extraction.topic_type];
+
         if (!extraction.is_ice_cream_new_product) {
-          if (!isWatch) {
+          if (!isWatch && !noticeLabel) {
             if (!dryRun) await markHandled([release.guid]);
             details.push({
               guid: release.guid,
@@ -328,8 +341,11 @@ export async function GET(request: NextRequest) {
             text: `${release.title}\n${release.link}`,
             blocking: [],
             warnings: [
-              "あいぱく関連の記事です（新商品の告知ではありません）。文面は書き足してください。",
-            ],
+              isWatch
+                ? "あいぱく関連の記事です（新商品の告知ではありません）。文面は書き足してください。"
+                : `${noticeLabel}の記事です（新商品の告知ではありません）。文面は書き足してください。`,
+              extraction.reason,
+            ].filter(Boolean),
             sourceExcerpt: sourceText.slice(0, 4000),
             createdAt: new Date().toISOString(),
           };
@@ -341,7 +357,9 @@ export async function GET(request: NextRequest) {
           details.push({
             guid: release.guid,
             title: release.title,
-            action: "あいぱく関連として承認待ちへ",
+            action: isWatch
+              ? "あいぱく関連として承認待ちへ"
+              : `${noticeLabel}として承認待ちへ`,
           });
           continue;
         }

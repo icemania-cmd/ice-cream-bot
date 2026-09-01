@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isAdmin } from "@/lib/auth";
 import { fetchReleaseDetail, type Release } from "@/lib/prtimes";
 import { classifyAndCompose, NOTICE_TOPICS } from "@/lib/classify";
+import { containsWatchTerms } from "@/lib/filter";
 import { isAutoPostPublisher } from "@/lib/trust";
 import { verifyPost } from "@/lib/verify";
 import {
@@ -77,11 +78,14 @@ export async function POST(request: NextRequest) {
 
     const sourceText = `${release.title}\n${release.corp}\n${detail.bodyText}`;
     const noticeLabel = NOTICE_TOPICS[extraction.topic_type];
+    // あいぱく関連は、発売告知として成立していても自動投稿しない。
+    // 事前フィルタを通さない入口なので、ここで単体の判定を呼ぶ。
+    const isWatch = containsWatchTerms(sourceText);
 
     if (!extraction.is_ice_cream_new_product) {
       // 出店・イベント・コラボは、発売告知でなくても承認待ちに積む。
       // scan と同じ扱いにしないと、拾い直したときだけ消える。
-      if (!noticeLabel) {
+      if (!noticeLabel && !isWatch) {
         await markHandled([target]);
         return NextResponse.json({
           ok: false,
@@ -104,7 +108,9 @@ export async function POST(request: NextRequest) {
         text: `${release.title}\n${target}`,
         blocking: [],
         warnings: [
-          `${noticeLabel}の記事です（新商品の告知ではありません）。文面は書き足してください。`,
+          isWatch
+            ? "あいぱく関連の記事です（新商品の告知ではありません）。文面は書き足してください。"
+            : `${noticeLabel}の記事です（新商品の告知ではありません）。文面は書き足してください。`,
           extraction.reason,
         ].filter(Boolean),
         sourceExcerpt: sourceText.slice(0, 4000),
@@ -115,7 +121,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         ok: true,
         入れた先: "承認待ち",
-        種類: noticeLabel,
+        種類: isWatch ? "あいぱく関連" : noticeLabel,
         理由: extraction.reason,
       });
     }
@@ -131,6 +137,11 @@ export async function POST(request: NextRequest) {
       check.warnings.push(
         `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）`
       );
+      check.autoPostable = false;
+    }
+
+    if (check.autoPostable && isWatch) {
+      check.warnings.push("あいぱく関連の記事のため確認が必要です");
       check.autoPostable = false;
     }
 

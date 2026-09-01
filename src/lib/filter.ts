@@ -184,6 +184,15 @@ const WATCH_TERMS = [
   "アイスマニア協会",
 ];
 
+/**
+ * あいぱく関連か。
+ * requeue のように事前フィルタを通さない入口でも同じ判定が要るため、
+ * prefilter とは別に単体で呼べる形で出しておく。
+ */
+export function containsWatchTerms(text: string): boolean {
+  return WATCH_TERMS.some((t) => text.includes(t));
+}
+
 export interface PrefilterResult {
   passed: boolean;
   /** どの語で通ったか／落ちたか。ログとチューニングのために必ず残す。 */

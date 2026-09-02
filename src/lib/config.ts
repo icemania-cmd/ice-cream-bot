@@ -82,11 +82,12 @@ export const ALLOW_DAYS_AFTER_RELEASE = 0;
  */
 export const POST_PREFIX = "【発売情報】";
 /**
- * X の重み付き文字数上限（全角2・半角1）。通常アカウントは280、
- * X Premium の長文投稿では引き上げ可能。当botは500を既定とする。
- * さらに変える場合は環境変数 MAX_TWEET_WEIGHT で上書きできる。
+ * X の重み付き文字数上限（全角2・半角1）。X API v2 の POST /2/tweets は
+ * Premium でも280が上限（2026-09-02 に公式ドキュメント/開発者フォーラムで再確認）。
+ * 長文投稿(最大25000)は Web/アプリのコンポーザ限定で、API からは作成できない。
+ * もし将来 API が長文対応したら環境変数 MAX_TWEET_WEIGHT で引き上げる。
  */
-export const MAX_TWEET_WEIGHT = Number(process.env.MAX_TWEET_WEIGHT || 500);
+export const MAX_TWEET_WEIGHT = Number(process.env.MAX_TWEET_WEIGHT || 280);
 /**
  * 生成時に狙う長さ。上限ぎりぎりを狙わせると超過して投稿不可になるため、
  * 余裕を持たせる。日本語で概ね100〜110文字。

@@ -70,8 +70,8 @@ function tweetWeight(text: string): number {
   return w;
 }
 
-/** 投稿の重み付き文字数上限（config.ts の既定値と揃える）。X Premium の長文投稿用に500。 */
-const MAX_TWEET_WEIGHT = 500;
+/** 投稿の重み付き文字数上限（config.ts の既定値と揃える）。X API v2 は Premium でも280が上限。 */
+const MAX_TWEET_WEIGHT = 280;
 
 const C = {
   bg: "#0f1115",

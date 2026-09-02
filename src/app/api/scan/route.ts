@@ -363,6 +363,7 @@ export async function GET(request: NextRequest) {
             corp: release.corp,
             publishedAt: release.publishedAt,
             imageUrl: release.imageUrl || detail?.ogImage,
+            images: detail?.images || [],
             releaseDate: "",
             productName: "",
             maker: release.corp,
@@ -431,6 +432,7 @@ export async function GET(request: NextRequest) {
           publishedAt: release.publishedAt,
           // RSS の [画像1:] はリリース本体の主画像。og:image は汎用バナーのことがある
           imageUrl: release.imageUrl || detail?.ogImage,
+          images: detail?.images || [],
           releaseDate: extraction.release_date,
           productName: extraction.product_name,
           maker: extraction.maker,

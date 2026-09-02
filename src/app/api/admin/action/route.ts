@@ -213,7 +213,16 @@ export async function POST(request: NextRequest) {
     let igStatus: string | undefined;
     let igImageUrl: string | null = null;
 
-    if (igMode === "press") {
+    if (igMode === "pick" && typeof body.igPickUrl === "string") {
+      // 承認画面で選ばれた候補画像。改ざん防止のため、その記事の候補内のURLに限る。
+      const candidates = [item.imageUrl, ...(item.images || [])].filter(
+        Boolean
+      ) as string[];
+      if (candidates.includes(body.igPickUrl)) {
+        igImageUrl = optimizedImageUrl(body.igPickUrl);
+      }
+      if (!igImageUrl) igNote = "IGスキップ(選択画像が不正)";
+    } else if (igMode === "press") {
       igImageUrl = item.imageUrl ? optimizedImageUrl(item.imageUrl) : null;
       if (!igImageUrl) igNote = "IGスキップ(プレス画像なし)";
     } else if (igMode === "upload" && typeof body.igUploadData === "string") {

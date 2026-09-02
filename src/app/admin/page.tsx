@@ -19,6 +19,7 @@ interface QueuedItem {
   warnings: string[];
   sourceExcerpt: string;
   createdAt: string;
+  images?: string[];
 }
 
 interface PostedSummary {
@@ -434,6 +435,7 @@ export default function AdminPage() {
     memo?: string,
     igMode?: string,
     igUploadData?: string,
+    igPickUrl?: string,
     confirmDuplicate = false
   ) {
     // 却下はカード側で理由を選ばせているので、ここでの確認は挟まない
@@ -459,6 +461,7 @@ export default function AdminPage() {
           memo,
           igMode,
           igUploadData,
+          igPickUrl,
           confirmDuplicate,
         }),
       });
@@ -468,7 +471,7 @@ export default function AdminPage() {
       if (res.status === 409 && json.needsConfirm) {
         setLoading(false);
         if (confirm(json.error)) {
-          await act(item, queue, action, text, reason, memo, igMode, igUploadData, true);
+          await act(item, queue, action, text, reason, memo, igMode, igUploadData, igPickUrl, true);
         } else {
           setMessage("投稿を取りやめました");
         }
@@ -1051,6 +1054,19 @@ async function downscaleImage(file: File, maxSize = 1080): Promise<string> {
   }
 }
 
+function igModeBtn(active: boolean): React.CSSProperties {
+  return {
+    padding: "8px 12px",
+    minHeight: 40,
+    borderRadius: 999,
+    border: `1px solid ${active ? C.accent : C.border}`,
+    background: active ? "#1d2733" : C.bg,
+    color: active ? C.accent : C.sub,
+    cursor: "pointer",
+    fontSize: 13,
+  };
+}
+
 function badgeStyle(color: string): React.CSSProperties {
   return {
     fontSize: 11,
@@ -1094,7 +1110,8 @@ function ReviewCard({
     reason?: string,
     memo?: string,
     igMode?: string,
-    igUploadData?: string
+    igUploadData?: string,
+    igPickUrl?: string
   ) => void;
   busy: boolean;
 }) {
@@ -1102,10 +1119,16 @@ function ReviewCard({
   const [showSource, setShowSource] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [memo, setMemo] = useState("");
-  const [igMode, setIgMode] = useState<"none" | "press" | "upload">("none");
+  const [igMode, setIgMode] = useState<"none" | "press" | "upload" | "pick">(
+    "none"
+  );
   const [igData, setIgData] = useState("");
   const [igName, setIgName] = useState("");
   const [igErr, setIgErr] = useState("");
+  const [igPick, setIgPick] = useState("");
+  const igCandidates = Array.from(
+    new Set([item.imageUrl, ...(item.images || [])].filter(Boolean))
+  ) as string[];
   const weight = tweetWeight(text);
   const over = weight > MAX_TWEET_WEIGHT;
 
@@ -1223,44 +1246,73 @@ function ReviewCard({
       >
         <div style={{ fontSize: 13, fontWeight: 700 }}>Instagram（任意）</div>
         <div style={{ fontSize: 12, color: C.sub, marginTop: 2, lineHeight: 1.6 }}>
-          既定はXのみ。IGにも出すなら画像を選んでください（IGは画像必須）。
-        </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          {([
-            ["none", "IGに出さない"],
-            ["press", "プレス画像で出す"],
-            ["upload", "画像をアップロード"],
-          ] as const).map(([mode, label]) => (
-            <button
-              key={mode}
-              onClick={() => {
-                setIgMode(mode);
-                setIgErr("");
-              }}
-              style={{
-                padding: "8px 12px",
-                minHeight: 40,
-                borderRadius: 999,
-                border: `1px solid ${igMode === mode ? C.accent : C.border}`,
-                background: igMode === mode ? "#1d2733" : C.bg,
-                color: igMode === mode ? C.accent : C.sub,
-                cursor: "pointer",
-                fontSize: 13,
-              }}
-            >
-              {label}
-            </button>
-          ))}
+          既定はXのみ。IGにも出すなら、候補から選ぶかアップロードしてください。
         </div>
 
-        {igMode === "press" && !item.imageUrl && (
-          <div style={{ color: C.warn, fontSize: 12.5, marginTop: 8 }}>
-            ⚠ この記事にはプレス画像がありません。IGには出せません。
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <button
+            onClick={() => {
+              setIgMode("none");
+              setIgErr("");
+            }}
+            style={igModeBtn(igMode === "none")}
+          >
+            IGに出さない
+          </button>
+          <button
+            onClick={() => {
+              setIgMode("upload");
+              setIgErr("");
+            }}
+            style={igModeBtn(igMode === "upload")}
+          >
+            画像をアップロード
+          </button>
+        </div>
+
+        {igCandidates.length > 0 ? (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>
+              候補から選ぶ（クリックで選択・記事本文とプレス画像から）
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {igCandidates.map((u) => {
+                const sel = igMode === "pick" && igPick === u;
+                return (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    key={u}
+                    src={u}
+                    alt=""
+                    onClick={() => {
+                      setIgMode("pick");
+                      setIgPick(u);
+                      setIgErr("");
+                    }}
+                    style={{
+                      width: 84,
+                      height: 84,
+                      objectFit: "cover",
+                      borderRadius: 8,
+                      cursor: "pointer",
+                      border: `2px solid ${sel ? C.accent : C.border}`,
+                      opacity: sel ? 1 : 0.8,
+                      display: "block",
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8 }}>
+            候補画像なし（アップロードで指定できます）
           </div>
         )}
-        {igMode === "press" && item.imageUrl && (
-          <div style={{ color: C.sub, fontSize: 12.5, marginTop: 8 }}>
-            上のプレス画像をIG向けに整えて投稿します（横長は見切れることがあります）。
+
+        {igMode === "pick" && (
+          <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8 }}>
+            選んだ画像をIG向けに整えて投稿します（横長は見切れることがあります）。
           </div>
         )}
 
@@ -1286,10 +1338,14 @@ function ReviewCard({
               style={{ fontSize: 13, color: C.sub }}
             />
             {igName && (
-              <div style={{ fontSize: 12, color: C.sub, marginTop: 6 }}>選択中: {igName}</div>
+              <div style={{ fontSize: 12, color: C.sub, marginTop: 6 }}>
+                選択中: {igName}
+              </div>
             )}
             {igErr && (
-              <div style={{ fontSize: 12.5, color: C.danger, marginTop: 6 }}>⚠ {igErr}</div>
+              <div style={{ fontSize: 12.5, color: C.danger, marginTop: 6 }}>
+                ⚠ {igErr}
+              </div>
             )}
             {igData && (
               // eslint-disable-next-line @next/next/no-img-element
@@ -1321,10 +1377,16 @@ function ReviewCard({
               undefined,
               undefined,
               igMode,
-              igMode === "upload" ? igData : undefined
+              igMode === "upload" ? igData : undefined,
+              igMode === "pick" ? igPick : undefined
             )
           }
-          disabled={busy || over || (igMode === "upload" && !igData)}
+          disabled={
+            busy ||
+            over ||
+            (igMode === "upload" && !igData) ||
+            (igMode === "pick" && !igPick)
+          }
           style={{
             flex: 1,
             padding: 14,

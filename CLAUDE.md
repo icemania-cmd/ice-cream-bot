@@ -60,6 +60,10 @@ IG は「承認時に人が画像を選んだときだけ」投稿する半自�
 upload はブラウザで1080pxに縮小→dataURLを承認と一緒に送信→action が Redis(v2:ig-upload:guid, TTL1日)に保存→
 署名付き /api/ig/stored がIG向けに整形して配信（範囲外は白余白で収める＝クロップしない）。
 press は /api/ig/image で最適化。IGの失敗はX投稿を巻き戻さない。
+- 画像候補（2026-09-02 追加・オプションB）：取得時に記事本文の <img>（data-src対応・絶対URL化・
+  ロゴ/アイコン等を名前で除外・重複除去・最大8件）を QueuedItem.images に保存。承認カードに
+  プレス画像＋本文画像をサムネ表示し、クリックで選択(igMode=pick, igPickUrl)。改ざん防止のため
+  action 側はその記事の候補URL内のみ許可。抽出精度はサイト構造依存（候補ゼロならアップロードで指定）。
 - 方式：Instagram API with Instagram Login（`graph.instagram.com`）。`lib/instagram.ts` の
   `postInstagram()` が「コンテナ作成→media_publish」の2段階で投稿。IGは**画像必須**なので
   画像が無い項目はIGだけスキップ（Xは出す）。IG失敗はXを巻き戻さない。

@@ -183,6 +183,8 @@ export interface QueuedItem {
   createdAt: string;
   /** 記事の種類（new_product / store / event / collab）。見送りの集計に使う */
   topicType?: string;
+  /** 本文中の商品画像候補（IGの画像選択用） */
+  images?: string[];
 }
 
 /**

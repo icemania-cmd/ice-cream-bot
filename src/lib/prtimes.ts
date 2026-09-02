@@ -33,6 +33,8 @@ export interface ReleaseDetail {
   ogTitle?: string;
   /** 配信企業名（og:site_name は「PR TIMES」になるため <title> から取る） */
   ogSiteName?: string;
+  /** 本文中の商品画像候補（IGの画像選択用）。絶対URL・重複除去・最大8件 */
+  images?: string[];
 }
 
 // ===== 低レベルユーティリティ =====
@@ -298,6 +300,34 @@ export async function fetchReleases(
 
 // ===== 記事ページの詳細取得 =====
 
+/**
+ * 本文HTMLから商品画像らしき <img> を集める。IGの画像候補に使う。
+ * ロゴ・アイコン・スペーサ等は名前で弾き、絶対URL化して重複を除く。
+ */
+function extractImages(html: string, baseUrl: string): string[] {
+  const urls: string[] = [];
+  const re = /<img\b[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const tag = m[0];
+    const src = (tag.match(/\b(?:data-src|data-original|src)=["\']([^"\']+)["\']/i) || [])[1];
+    if (!src) continue;
+    let abs: string;
+    try {
+      abs = new URL(src, baseUrl).toString();
+    } catch {
+      continue;
+    }
+    if (!/^https?:\/\//i.test(abs)) continue;
+    if (/\.svg(\?|$)/i.test(abs)) continue;
+    if (/(sprite|icon|logo|avatar|spacer|blank|loading|pixel|tracking|1x1|badge|arrow|common)/i.test(abs)) continue;
+    // 画像らしさ（拡張子 or 画像配信パス）で軽く絞る
+    if (!/\.(jpe?g|png|webp|gif)(\?|$)/i.test(abs) && !/(\/img|image|media|upload|assets)/i.test(abs)) continue;
+    urls.push(abs);
+  }
+  return Array.from(new Set(urls)).slice(0, 8);
+}
+
 function stripHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -368,8 +398,10 @@ export async function fetchReleaseDetail(
       .trim()
       .slice(0, 8000);
 
-    if (bodyText.length < 50) return { bodyText: "", ogImage, ogTitle, ogSiteName };
-    return { bodyText, ogImage, ogTitle, ogSiteName };
+    const images = extractImages(main, link);
+    if (bodyText.length < 50)
+      return { bodyText: "", ogImage, ogTitle, ogSiteName, images };
+    return { bodyText, ogImage, ogTitle, ogSiteName, images };
   } catch {
     return null;
   }

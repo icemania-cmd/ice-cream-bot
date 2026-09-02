@@ -467,7 +467,7 @@ export default function AdminPage() {
         return;
       }
 
-      setMessage(res.ok ? `✅ ${json.action} ${json.imageNote || ""}` : `❌ ${json.error}`);
+      setMessage(res.ok ? `✅ ${json.action} ${json.imageNote || ""}${json.igNote ? " / " + json.igNote : ""}` : `❌ ${json.error}`);
       await load(secret);
     } catch (e) {
       setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);

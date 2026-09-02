@@ -3,6 +3,7 @@ import { isAdmin } from "@/lib/auth";
 import { MAX_TWEET_WEIGHT } from "@/lib/config";
 import { tweetWeight } from "@/lib/verify";
 import { postTweet, uploadMedia } from "@/lib/x";
+import { postInstagram } from "@/lib/instagram";
 import {
   claimForPost,
   dequeue,
@@ -200,11 +201,20 @@ export async function POST(request: NextRequest) {
     await recordPost();
     await dequeue(queue, guid);
 
+    // X投稿が確定した後で、IGにも best-effort で流す。
+    // IGの失敗はX投稿を巻き戻さない（既に世に出ているため）。IGは画像必須。
+    let igNote = "";
+    const ig = await postInstagram(item.imageUrl, text);
+    if (ig.success) igNote = "IGにも投稿";
+    else if (ig.skipped) igNote = `IGスキップ(${ig.reason})`;
+    else igNote = `IG投稿失敗(${ig.error})`;
+
     return NextResponse.json({
       ok: true,
       action: "投稿しました",
       tweetId: result.tweetId,
       imageNote,
+      igNote,
     });
   } catch (e) {
     return NextResponse.json(

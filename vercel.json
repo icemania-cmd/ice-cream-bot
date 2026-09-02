@@ -8,6 +8,10 @@
     {
       "path": "/api/scan",
       "schedule": "21 * * * *"
+    },
+    {
+      "path": "/api/ig/refresh",
+      "schedule": "0 3 * * 1"
     }
   ]
 }

@@ -51,6 +51,21 @@ X Premium でも **API 経由では280文字（重み）の制限が残る**た�
 > `postTweet()`（`{text}` を投げるだけ、note_tweet 未使用）では作成不可。
 > 長文相当をやるならスレッド(連投)化の実装が必要。
 
+## Instagram 同時投稿（2026-09-02 実装）
+
+X 投稿が確定した後に IG へ best-effort でファンアウトする（承認時=action、自動投稿時=scan の両経路）。
+- 方式：Instagram API with Instagram Login（`graph.instagram.com`）。`lib/instagram.ts` の
+  `postInstagram()` が「コンテナ作成→media_publish」の2段階で投稿。IGは**画像必須**なので
+  画像が無い項目はIGだけスキップ（Xは出す）。IG失敗はXを巻き戻さない。
+- 有効化条件：env に `IG_USER_ID` と `IG_ACCESS_TOKEN` の両方。未設定なら完全に休眠（Xのみ）。
+- トークン運用：60日失効。週次 cron `/api/ig/refresh`（vercel.json、月曜03:00 UTC）が延命し、
+  延命後の値は Redis `v2:ig:token` に保存（env は書けないため）。読み取りは Redis優先・envフォールバック。
+  手動でトークン再発行したら env を更新し `/api/ig/refresh?seed=1` を一度叩く。
+- 権限：`instagram_business_basic` + `instagram_business_content_publish`（自分のアカウント=
+  テスター役割でStandard Access、App Review不要）。IGアカウントID=`17841401592523144`。
+- 既知の限界：画像はJPEG・アスペクト比4:5〜1.91:1・公開URL必須。PR TIMES以外の画像は弾かれることがある。
+  文面はXと同一（MVP）。将来はIG用にハッシュタグ付き文面を出し分ける余地あり。
+
 ## 次にやること
 
 ### ① 溜まった投稿待ちを確認する

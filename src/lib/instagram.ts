@@ -215,3 +215,38 @@ export function verifyImageSig(u: string, sig: string): boolean {
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+
+
+/**
+ * 診断用：コンテナ作成(step1)だけを試し、IG API の生レスポンスを返す。
+ * media_publish は呼ばないので、Instagram のタイムラインには何も出ない。
+ * 本番コードが握り潰しているエラー本文を、実投稿なしで確認するために使う。
+ */
+export async function probeInstagramContainer(
+  imageUrl: string | undefined,
+  caption: string
+): Promise<{
+  configured: boolean;
+  imageUsed?: string;
+  status?: number;
+  ok?: boolean;
+  body?: string;
+  error?: string;
+}> {
+  if (!instagramConfigured()) return { configured: false, error: "IG未設定" };
+  if (!imageUrl) return { configured: true, error: "画像URLが空" };
+  const igUserId = process.env.IG_USER_ID as string;
+  const token = await getIgToken();
+  if (!token) return { configured: true, error: "トークンなし" };
+  const image = optimizedImageUrl(imageUrl) || normalizeImageUrl(imageUrl);
+  const cap = caption.length > CAPTION_MAX ? caption.slice(0, CAPTION_MAX) : caption;
+  try {
+    const res = await igFetch(
+      `${GRAPH}/${VERSION}/${igUserId}/media`,
+      new URLSearchParams({ image_url: image, caption: cap, access_token: token })
+    );
+    return { configured: true, imageUsed: image, status: res.status, ok: res.ok, body: res.text.slice(0, 800) };
+  } catch (e) {
+    return { configured: true, imageUsed: image, error: e instanceof Error ? e.message : String(e) };
+  }
+}

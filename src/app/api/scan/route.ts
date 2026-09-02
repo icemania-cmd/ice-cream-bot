@@ -149,7 +149,7 @@ export async function GET(request: NextRequest) {
     const ig = await postInstagram(item.imageUrl, item.text);
     if (ig.success) { igStatus = "posted"; log.notes.push(`IGにも投稿: ${item.title}`); }
     else if (ig.skipped) { igStatus = "skipped"; }
-    else { igStatus = "failed"; log.errors.push(`IG投稿失敗(${item.title}): ${ig.error}`); }
+    else { igStatus = "failed"; log.errors.push(`IG投稿失敗(${item.title}): ${ig.error}`); console.error("[IG] auto post failed:", item.title, ig.error); }
 
     await markPosted(item.guid, {
       title: item.title,

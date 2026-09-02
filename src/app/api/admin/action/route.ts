@@ -209,7 +209,7 @@ export async function POST(request: NextRequest) {
     const ig = await postInstagram(item.imageUrl, text);
     if (ig.success) { igNote = "IGにも投稿"; igStatus = "posted"; }
     else if (ig.skipped) { igNote = `IGスキップ(${ig.reason})`; igStatus = "skipped"; }
-    else { igNote = `IG投稿失敗(${ig.error})`; igStatus = "failed"; }
+    else { igNote = `IG投稿失敗(${ig.error})`; igStatus = "failed"; console.error("[IG] approve post failed:", ig.error); }
 
     await markPosted(guid, {
       title: item.title,

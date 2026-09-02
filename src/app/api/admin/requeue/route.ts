@@ -39,18 +39,57 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const target: string = body.url;
-    const allowed = /^https:\/\/(prtimes\.jp|www\.atpress\.ne\.jp)\//.test(
-      target || ""
-    );
+    // manual=true は管理画面の「手動取得」から呼ばれる。人がアイスだと判断して
+    // 貼るため、取得元を PR TIMES/@Press に限定せず、必ず承認待ちに積む。
+    const manual = body.manual === true;
+    const allowed = manual
+      ? /^https?:\/\/.+/.test(target || "")
+      : /^https:\/\/(prtimes\.jp|www\.atpress\.ne\.jp)\//.test(target || "");
     if (!target || !allowed) {
       return NextResponse.json(
-        { error: "PR TIMES または @Press の記事URLを url で指定してください" },
+        {
+          error: manual
+            ? "http(s) から始まる記事URLを url で指定してください"
+            : "PR TIMES または @Press の記事URLを url で指定してください",
+        },
         { status: 400 }
       );
     }
 
     const detail = await fetchReleaseDetail(target);
     if (!detail?.bodyText) {
+      // 手動投入は空振りにしない。本文が取れなくても、見出し＋URLだけで
+      // 承認待ちに積み、文面は人が仕上げられるようにする。
+      if (manual) {
+        const bareTitle = detail?.ogTitle || target;
+        const fallback: QueuedItem = {
+          guid: target,
+          title: bareTitle,
+          link: target,
+          corp: detail?.ogSiteName || "",
+          publishedAt: new Date().toISOString(),
+          imageUrl: detail?.ogImage,
+          releaseDate: "",
+          productName: "",
+          maker: detail?.ogSiteName || "",
+          price: "",
+          region: "",
+          text: `${bareTitle}\n${target}`,
+          blocking: [],
+          warnings: [
+            "本文を自動取得できませんでした。文面を手動で作成してください。",
+          ],
+          sourceExcerpt: "",
+          createdAt: new Date().toISOString(),
+          topicType: "manual",
+        };
+        await enqueue("review", fallback);
+        return NextResponse.json({
+          ok: true,
+          入れた先: "承認待ち",
+          注記: "本文を取得できなかったため、見出しとURLだけで積みました",
+        });
+      }
       return NextResponse.json(
         { error: "記事本文を取得できませんでした" },
         { status: 502 }
@@ -84,6 +123,43 @@ export async function POST(request: NextRequest) {
     const isWatch = containsWatchTerms(sourceText);
 
     if (!extraction.is_ice_cream_new_product) {
+      // 手動投入は判定に関わらず必ず承認待ちへ。best-effort の文面を付けて積む。
+      if (manual) {
+        const label = noticeLabel
+          ? `${noticeLabel}の記事です（新商品の告知ではありません）`
+          : isWatch
+          ? "あいぱく関連の記事です（新商品の告知ではありません）"
+          : "アイスの新商品としては判定できませんでした";
+        const manualNotice: QueuedItem = {
+          guid: target,
+          title: release.title,
+          link: target,
+          corp: release.corp,
+          publishedAt: release.publishedAt,
+          imageUrl: release.imageUrl,
+          releaseDate: "",
+          productName: "",
+          maker: release.corp,
+          price: "",
+          region: "",
+          text: `${release.title}\n${target}`,
+          blocking: [],
+          warnings: [
+            `${label}。文面を確認・加筆してください。`,
+            extraction.reason,
+          ].filter(Boolean),
+          sourceExcerpt: sourceText.slice(0, 4000),
+          createdAt: new Date().toISOString(),
+          topicType: extraction.topic_type || "manual",
+        };
+        await enqueue("review", manualNotice);
+        return NextResponse.json({
+          ok: true,
+          入れた先: "承認待ち",
+          種類: noticeLabel || (isWatch ? "あいぱく関連" : "判定外(手動)"),
+          理由: extraction.reason,
+        });
+      }
       // 出店・イベント・コラボは、発売告知でなくても承認待ちに積む。
       // scan と同じ扱いにしないと、拾い直したときだけ消える。
       if (!noticeLabel && !isWatch) {
@@ -141,21 +217,22 @@ export async function POST(request: NextRequest) {
       check.autoPostable = false;
     }
 
-    if (check.autoPostable && isWatch) {
+    if (!manual && check.autoPostable && isWatch) {
       check.warnings.push("あいぱく関連の記事のため確認が必要です");
       check.autoPostable = false;
     }
 
     // 自動投稿の門は scan と同じものを通す。
     // ここを素通りさせると、拾い直した記事だけが大手限定の制限を抜ける。
-    if (check.autoPostable && !isAutoPostPublisher(release.corp)) {
+    if (!manual && check.autoPostable && !isAutoPostPublisher(release.corp)) {
       check.warnings.push(
         `自動投稿の対象外の配信元のため確認が必要です（配信元: ${release.corp || "不明"}）`
       );
       check.autoPostable = false;
     }
 
-    const queue = check.autoPostable ? "ready" : "review";
+    // 手動投入は人の確認を必須にするため、判定を全部通っても承認待ちに置く。
+    const queue = manual ? "review" : check.autoPostable ? "ready" : "review";
     const item: QueuedItem = {
       guid: target,
       title: release.title,

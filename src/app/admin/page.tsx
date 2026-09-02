@@ -134,6 +134,8 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false);
   const [pushState, setPushState] = useState<PushState>("checking");
   const [pushDevices, setPushDevices] = useState(0);
+  const [manualUrl, setManualUrl] = useState("");
+  const [ingesting, setIngesting] = useState(false);
 
   useEffect(() => {
     // URLのフラグメント（#k=…）から鍵を受け取る。
@@ -474,6 +476,42 @@ export default function AdminPage() {
     }
   }
 
+  /**
+   * 手動取得：発売情報のURLを渡し、取得→抽出→フォーマット生成→照合まで通して
+   * 承認待ちに積む。人が「これはアイスだ」と判断して貼るため、取得元は限定せず、
+   * 判定結果に関わらず必ず承認待ちへ入れる（本番の自動投稿ゲートは通さない）。
+   */
+  async function requeueManual() {
+    const url = manualUrl.trim();
+    if (!url) return;
+    setIngesting(true);
+    setMessage("");
+    try {
+      const res = await fetch("/api/admin/requeue", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-secret": secret,
+        },
+        body: JSON.stringify({ url, manual: true }),
+      });
+      const json = await res.json();
+      if (res.ok && json.ok) {
+        const note = json.注記 ? `（${json.注記}）` : json.種類 ? `（${json.種類}）` : "";
+        setMessage(`✅ 承認待ちに追加しました${note}`);
+        setManualUrl("");
+        setTab("review");
+        await load(secret);
+      } else {
+        setMessage(`❌ ${json.error || json.理由 || "追加できませんでした"}`);
+      }
+    } catch (e) {
+      setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIngesting(false);
+    }
+  }
+
   if (!authed) {
     return (
       <main style={{ maxWidth: 420, margin: "0 auto", padding: "80px 20px" }}>
@@ -704,6 +742,65 @@ export default function AdminPage() {
           </button>
         </div>
       )}
+
+      <div
+        style={{
+          background: C.card,
+          border: `1px solid ${C.border}`,
+          borderRadius: 12,
+          padding: "14px 18px",
+          marginTop: 18,
+        }}
+      >
+        <div style={{ fontSize: 15, fontWeight: 700 }}>手動取得</div>
+        <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6, marginTop: 2 }}>
+          発売情報のURLを貼ると、取得・要約して投稿文を生成し、承認待ちに積みます（Xへは出しません）。
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          <input
+            type="url"
+            inputMode="url"
+            value={manualUrl}
+            onChange={(e) => setManualUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !ingesting && manualUrl.trim()) void requeueManual();
+            }}
+            placeholder="https://..."
+            style={{
+              flex: 1,
+              minWidth: 220,
+              padding: "10px 12px",
+              minHeight: 44,
+              borderRadius: 8,
+              border: `1px solid ${C.border}`,
+              background: "#0f1115",
+              color: "#e8eaed",
+              fontSize: 15,
+              boxSizing: "border-box",
+            }}
+          />
+          <button
+            onClick={() => void requeueManual()}
+            disabled={ingesting || !manualUrl.trim()}
+            style={{
+              padding: "10px 20px",
+              minHeight: 44,
+              borderRadius: 8,
+              border: "none",
+              background: ingesting || !manualUrl.trim() ? C.card : C.accent,
+              color: ingesting || !manualUrl.trim() ? C.sub : "#0f1115",
+              boxShadow:
+                ingesting || !manualUrl.trim() ? `inset 0 0 0 1px ${C.border}` : "none",
+              fontWeight: 700,
+              fontSize: 14,
+              cursor: ingesting || !manualUrl.trim() ? "default" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {ingesting ? "取得中..." : "取得して承認待ちへ"}
+          </button>
+        </div>
+      </div>
 
       <div style={{ display: "flex", gap: 8, margin: "20px 0", flexWrap: "wrap" }}>
         {tabs.map((t) => (

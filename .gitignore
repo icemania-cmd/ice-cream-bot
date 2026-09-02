@@ -11,3 +11,7 @@ tsconfig.tsbuildinfo
 .env.*
 !.env.example
 .env*
+
+# ローカルのデバッグ用スクリプト（コミットしない）
+_iginspect.cjs
+_*.cjs

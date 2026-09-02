@@ -15,3 +15,6 @@ tsconfig.tsbuildinfo
 # ローカルのデバッグ用スクリプト（コミットしない）
 _iginspect.cjs
 _*.cjs
+
+# FUSEマウント経由編集の残骸（Cowork/リモート編集で発生しうる）
+.fuse_hidden*

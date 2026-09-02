@@ -1,3 +1,4 @@
+import { MAX_TWEET_WEIGHT } from "@/lib/config";
 import { NextRequest, NextResponse } from "next/server";
 import { fetchReleaseDetail, type Release } from "@/lib/prtimes";
 import { prefilter } from "@/lib/filter";
@@ -94,7 +95,7 @@ export async function GET(request: NextRequest) {
     判定: check.autoPostable ? "自動投稿の対象" : "承認待ちに回る",
     事前フィルタ: pf.passed ? `通過（${pf.reason}）` : `本来は除外（${pf.reason}）`,
     投稿文: check.text,
-    文字数: `${check.weight}/280`,
+    文字数: `${check.weight}/${MAX_TWEET_WEIGHT}`,
     抽出結果: {
       商品名: extraction.product_name,
       メーカー: extraction.maker,

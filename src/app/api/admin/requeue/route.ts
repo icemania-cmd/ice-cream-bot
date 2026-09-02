@@ -1,3 +1,4 @@
+import { MAX_TWEET_WEIGHT } from "@/lib/config";
 import { NextRequest, NextResponse } from "next/server";
 import { isAdmin } from "@/lib/auth";
 import { fetchReleaseDetail, type Release } from "@/lib/prtimes";
@@ -180,7 +181,7 @@ export async function POST(request: NextRequest) {
       ok: true,
       入れた先: queue === "ready" ? "投稿待ち" : "承認待ち",
       投稿文: check.text,
-      文字数: `${check.weight}/280`,
+      文字数: `${check.weight}/${MAX_TWEET_WEIGHT}`,
       承認待ちに回る理由: check.warnings,
       投稿不可の問題: check.blocking,
     });

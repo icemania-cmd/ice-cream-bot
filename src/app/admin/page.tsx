@@ -70,6 +70,9 @@ function tweetWeight(text: string): number {
   return w;
 }
 
+/** 投稿の重み付き文字数上限（config.ts の既定値と揃える）。X Premium の長文投稿用に500。 */
+const MAX_TWEET_WEIGHT = 500;
+
 const C = {
   bg: "#0f1115",
   card: "#171a21",
@@ -846,7 +849,7 @@ function ReviewCard({
   const [rejecting, setRejecting] = useState(false);
   const [memo, setMemo] = useState("");
   const weight = tweetWeight(text);
-  const over = weight > 280;
+  const over = weight > MAX_TWEET_WEIGHT;
 
   return (
     <div style={cardStyle}>
@@ -917,7 +920,7 @@ function ReviewCard({
         }}
       />
       <div style={{ fontSize: 12, color: over ? C.danger : C.sub }}>
-        {weight} / 280
+        {weight} / {MAX_TWEET_WEIGHT}
       </div>
 
       <button

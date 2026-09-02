@@ -65,6 +65,12 @@ X 投稿が確定した後に IG へ best-effort でファンアウトする（�
   テスター役割でStandard Access、App Review不要）。IGアカウントID=`17841401592523144`。
 - 既知の限界：画像はJPEG・アスペクト比4:5〜1.91:1・公開URL必須。PR TIMES以外の画像は弾かれることがある。
   文面はXと同一（MVP）。将来はIG用にハッシュタグ付き文面を出し分ける余地あり。
+- 画像最適化（2026-09-02 追加）：IGへ渡す前に `/api/ig/image`（署名付き公開エンドポイント）経由で
+  sharp が最適化JPEGを生成する。IGがその署名URLを取得→その場で変換JPEGを受け取る（外部ストレージ不要）。
+  署名はCRON_SECRET流用のHMACで、鍵を持つbotだけが変換URLを作れる（踏み台化防止）。
+  モードは env `IG_IMAGE_MODE`：square(既定,1:1中央クロップ)/portrait(4:5)/auto(範囲外だけ最小クロップ)/pad(ぼかし背景で全体保持)。
+  出力は幅≤1080・JPEG q85・EXIF向き補正・cover位置=attention。公開URLは PUBLIC_BASE_URL か VERCEL_PROJECT_PRODUCTION_URL。
+  依存に sharp を追加。
 
 ## 次にやること
 

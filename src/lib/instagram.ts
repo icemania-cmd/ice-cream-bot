@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { redis } from "./store";
 import { normalizeImageUrl } from "./x";
 
@@ -86,7 +87,8 @@ export async function postInstagram(
   const token = await getIgToken();
   if (!token) return { skipped: true, reason: "IGトークンなし" };
 
-  const image = normalizeImageUrl(imageUrl);
+  // IGには最適化プロキシURLを渡す。前提が欠ける場合のみ生URLにフォールバック。
+  const image = optimizedImageUrl(imageUrl) || normalizeImageUrl(imageUrl);
   const cap = caption.length > CAPTION_MAX ? caption.slice(0, CAPTION_MAX) : caption;
 
   try {
@@ -166,4 +168,50 @@ export async function seedIgTokenFromEnv(): Promise<boolean> {
   if (!process.env.IG_ACCESS_TOKEN) return false;
   await redis.set(IG_TOKEN_KEY, process.env.IG_ACCESS_TOKEN);
   return true;
+}
+
+
+// ===== IG最適化画像の受け渡し =====
+//
+// IG は image_url を「公開URL」から取得する仕様。かつ縦横比(4:5〜1.91:1)と
+// JPEG形式の制約がある。そこで、元画像URLを bot 自身の署名付きエンドポイント
+// /api/ig/image に包んで渡し、IGがそこを取得した瞬間に sharp で最適化JPEGを返す。
+// 外部ストレージ不要。署名(HMAC)により、鍵を持つ bot だけが変換URLを作れる
+// （不特定の画像を取得させられる踏み台化を防ぐ）。
+
+/** 自分の公開ベースURL（Vercel本番ドメイン）。作れなければ空。 */
+function appBaseUrl(): string {
+  const explicit = process.env.PUBLIC_BASE_URL;
+  if (explicit) return explicit.replace(/\/$/, "");
+  const vercel = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  if (vercel) return `https://${vercel}`;
+  return "";
+}
+
+/** 画像プロキシURLの署名に使う秘密。CRON_SECRET を流用（無ければADMIN_SECRET）。 */
+function imageSignSecret(): string {
+  return process.env.CRON_SECRET || process.env.ADMIN_SECRET || "";
+}
+
+function signImage(u: string, secret: string): string {
+  return crypto.createHmac("sha256", secret).update(u).digest("hex").slice(0, 32);
+}
+
+/** IGに渡す最適化画像の公開URL（署名付き）。前提が欠ければ null。 */
+export function optimizedImageUrl(src: string): string | null {
+  const base = appBaseUrl();
+  const secret = imageSignSecret();
+  if (!base || !secret) return null;
+  const u = Buffer.from(src, "utf8").toString("base64url");
+  return `${base}/api/ig/image?u=${u}&sig=${signImage(u, secret)}`;
+}
+
+/** /api/ig/image 側の署名検証。 */
+export function verifyImageSig(u: string, sig: string): boolean {
+  const secret = imageSignSecret();
+  if (!secret) return false;
+  const expected = signImage(u, secret);
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }

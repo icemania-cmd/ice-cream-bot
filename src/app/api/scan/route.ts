@@ -227,13 +227,26 @@ export async function GET(request: NextRequest) {
       log.notes.push(`フィード最新: ${newestAt}（${freshnessMinutes}分前）`);
     }
     // 主ソースは2本ある。片方だけ止まったときに切り分けられるよう別々に見る。
+    // @Press は業務時間帯（平日8〜20時JST）に配信が集中し、夜間・週末は数時間止まるのが正常。
+    // その時間帯に90分ルールで赤字を出すと、本物の障害が埋もれるため注記に降格する。
+    // PR TIMES は夜間も流れるので常に90分ルール。
+    const jstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const jstHour = jstNow.getUTCHours();
+    const jstDay = jstNow.getUTCDay(); // 0=日,6=土
+    const atpressQuietHours = jstHour < 8 || jstHour >= 20 || jstDay === 0 || jstDay === 6;
     for (const f of freshnessBySource) {
       if (f.minutes === null) {
         log.errors.push(`${f.source} から1件も取得できていません`);
       } else if (f.minutes > 90) {
-        log.errors.push(
-          `${f.source} が${f.minutes}分前で止まっています。配信側またはCDNのキャッシュを疑ってください`
-        );
+        if (f.source === "@Press" && atpressQuietHours) {
+          log.notes.push(
+            `${f.source}: ${f.minutes}分前（業務時間外のため静穏。翌営業時間に更新が無ければ要確認）`
+          );
+        } else {
+          log.errors.push(
+            `${f.source} が${f.minutes}分前で止まっています。配信側またはCDNのキャッシュを疑ってください`
+          );
+        }
       } else {
         log.notes.push(`${f.source}: ${f.minutes}分前`);
       }

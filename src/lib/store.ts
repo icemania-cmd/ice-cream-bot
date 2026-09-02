@@ -41,6 +41,7 @@ const K = {
   daily: (jstDate: string) => `v2:daily:${jstDate}`,
   postItem: (guid: string) => `v2:post:${guid}`,
   rejectedItem: (guid: string) => `v2:rejected-item:${guid}`,
+  igUpload: (guid: string) => `v2:ig-upload:${guid}`,
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -379,6 +380,17 @@ export async function unreject(guid: string): Promise<boolean> {
   pipe.del(K.rejectedItem(guid));
   await pipe.exec();
   return true;
+}
+
+/** IG差し替え用にアップロードされた画像(JPEGのbase64)を一時保存する。 */
+export async function setIgUpload(guid: string, base64Jpeg: string): Promise<void> {
+  await redis.set(K.igUpload(guid), base64Jpeg, { ex: 24 * 60 * 60 });
+}
+
+/** 保存済みのIGアップロード画像(base64)を取り出す。無ければ null。 */
+export async function getIgUpload(guid: string): Promise<string | null> {
+  const v = await redis.get(K.igUpload(guid));
+  return typeof v === "string" ? v : null;
 }
 
 // ===== 運用設定（管理画面から変更できる）=====

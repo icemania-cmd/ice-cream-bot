@@ -12,7 +12,6 @@ import { isAutoPostPublisher } from "@/lib/trust";
 import { notifyQueued } from "@/lib/push";
 
 import { postTweet, uploadMedia } from "@/lib/x";
-import { postInstagram } from "@/lib/instagram";
 import {
   acquireRunLock,
   appendRunLog,
@@ -143,14 +142,8 @@ export async function GET(request: NextRequest) {
 
     await rememberPostedProduct(item.productName);
 
-    // X投稿が確定した後で、IGにも best-effort で流す（IGは画像必須）。
-    // IGの失敗はログに残すだけで、自動投稿フロー自体は成功として扱う。結果は投稿済み記録に残す。
-    let igStatus: string | undefined;
-    const ig = await postInstagram(item.imageUrl, item.text);
-    if (ig.success) { igStatus = "posted"; log.notes.push(`IGにも投稿: ${item.title}`); }
-    else if (ig.skipped) { igStatus = "skipped"; }
-    else { igStatus = "failed"; log.errors.push(`IG投稿失敗(${item.title}): ${ig.error}`); console.error("[IG] auto post failed:", item.title, ig.error); }
-
+    // 自動投稿はX限定。IGは画像品質を人が担保する運用にしたため、
+    // 承認画面で人が画像を選んだときだけ投稿する（自動経路ではIGに出さない）。
     await markPosted(item.guid, {
       title: item.title,
       link: item.link,
@@ -159,7 +152,6 @@ export async function GET(request: NextRequest) {
       imageUrl: item.imageUrl,
       releaseDate: item.releaseDate,
       route: "auto",
-      ig: igStatus,
     });
     // markPosted が ready/review からの削除も済ませているので dequeue は不要
     await recordPost();

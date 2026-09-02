@@ -81,14 +81,15 @@ export async function postInstagram(
   caption: string
 ): Promise<IgResult> {
   if (!instagramConfigured()) return { skipped: true, reason: "IG未設定" };
-  if (!imageUrl) return { skipped: true, reason: "画像なし（IGは画像必須）" };
+  // imageUrl は「IGに渡す最終的な公開URL」を呼び出し側が決めて渡す
+  // （プレス画像なら optimizedImageUrl、アップロードなら storedImageUrl）。
+  if (!imageUrl) return { skipped: true, reason: "IG画像が選ばれていません" };
 
   const igUserId = process.env.IG_USER_ID as string;
   const token = await getIgToken();
   if (!token) return { skipped: true, reason: "IGトークンなし" };
 
-  // IGには最適化プロキシURLを渡す。前提が欠ける場合のみ生URLにフォールバック。
-  const image = optimizedImageUrl(imageUrl) || normalizeImageUrl(imageUrl);
+  const image = imageUrl;
   const cap = caption.length > CAPTION_MAX ? caption.slice(0, CAPTION_MAX) : caption;
 
   try {
@@ -230,7 +231,16 @@ export function optimizedImageUrl(src: string): string | null {
   return `${base}/api/ig/image?u=${u}&sig=${signImage(u, secret)}`;
 }
 
-/** /api/ig/image 側の署名検証。 */
+/** アップロード画像（Redis保存）をIGに渡すための署名付き配信URL。作れなければ null。 */
+export function storedImageUrl(guid: string): string | null {
+  const base = appBaseUrl();
+  const secret = imageSignSecret();
+  if (!base || !secret) return null;
+  const u = Buffer.from(guid, "utf8").toString("base64url");
+  return `${base}/api/ig/stored?u=${u}&sig=${signImage(u, secret)}`;
+}
+
+/** /api/ig/image・/api/ig/stored 共通の署名検証。 */
 export function verifyImageSig(u: string, sig: string): boolean {
   const secret = imageSignSecret();
   if (!secret) return false;

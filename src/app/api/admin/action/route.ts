@@ -3,7 +3,7 @@ import { isAdmin } from "@/lib/auth";
 import { MAX_TWEET_WEIGHT } from "@/lib/config";
 import { tweetWeight } from "@/lib/verify";
 import { postTweet, uploadMedia } from "@/lib/x";
-import { postInstagram } from "@/lib/instagram";
+import { postInstagram, optimizedImageUrl, storedImageUrl } from "@/lib/instagram";
 import {
   claimForPost,
   dequeue,
@@ -15,6 +15,7 @@ import {
   rememberStyleSample,
   reject,
   unreject,
+  setIgUpload,
   rememberPostedProduct,
   releaseClaim,
   type QueueName,
@@ -202,14 +203,36 @@ export async function POST(request: NextRequest) {
 
     await rememberPostedProduct(item.productName);
 
-    // X投稿が確定した後で、IGにも best-effort で流す（画像必須）。
+    // IGは「人が承認画面で選んだとき」だけ投稿する（既定は出さない）。
+    //   igMode: "press"   … プレス画像(item.imageUrl)をそのままIGにも使う
+    //           "upload"  … 差し替え画像。igUploadData(dataURL)を保存して使う
+    //           それ以外   … IGには出さない
     // IGの失敗はX投稿を巻き戻さない。結果は投稿済み記録にも残す。
+    const igMode: string = typeof body.igMode === "string" ? body.igMode : "none";
     let igNote = "";
     let igStatus: string | undefined;
-    const ig = await postInstagram(item.imageUrl, text);
-    if (ig.success) { igNote = "IGにも投稿"; igStatus = "posted"; }
-    else if (ig.skipped) { igNote = `IGスキップ(${ig.reason})`; igStatus = "skipped"; }
-    else { igNote = `IG投稿失敗(${ig.error})`; igStatus = "failed"; console.error("[IG] approve post failed:", ig.error); }
+    let igImageUrl: string | null = null;
+
+    if (igMode === "press") {
+      igImageUrl = item.imageUrl ? optimizedImageUrl(item.imageUrl) : null;
+      if (!igImageUrl) igNote = "IGスキップ(プレス画像なし)";
+    } else if (igMode === "upload" && typeof body.igUploadData === "string") {
+      const m = body.igUploadData.match(/^data:image\/[a-zA-Z+]+;base64,(.+)$/);
+      if (m) {
+        await setIgUpload(guid, m[1]).catch(() => undefined);
+        igImageUrl = storedImageUrl(guid);
+      }
+      if (!igImageUrl) igNote = "IGスキップ(アップロード画像が不正)";
+    }
+
+    if (igImageUrl) {
+      const ig = await postInstagram(igImageUrl, text);
+      if (ig.success) { igNote = "IGにも投稿"; igStatus = "posted"; }
+      else if (ig.skipped) { igNote = `IGスキップ(${ig.reason})`; igStatus = "skipped"; }
+      else { igNote = `IG投稿失敗(${ig.error})`; igStatus = "failed"; console.error("[IG] approve post failed:", ig.error); }
+    } else if (!igNote) {
+      igNote = "IGなし";
+    }
 
     await markPosted(guid, {
       title: item.title,

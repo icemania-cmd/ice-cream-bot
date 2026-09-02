@@ -432,6 +432,8 @@ export default function AdminPage() {
     text?: string,
     reason?: string,
     memo?: string,
+    igMode?: string,
+    igUploadData?: string,
     confirmDuplicate = false
   ) {
     // 却下はカード側で理由を選ばせているので、ここでの確認は挟まない
@@ -455,6 +457,8 @@ export default function AdminPage() {
           text,
           reason,
           memo,
+          igMode,
+          igUploadData,
           confirmDuplicate,
         }),
       });
@@ -464,7 +468,7 @@ export default function AdminPage() {
       if (res.status === 409 && json.needsConfirm) {
         setLoading(false);
         if (confirm(json.error)) {
-          await act(item, queue, action, text, reason, memo, true);
+          await act(item, queue, action, text, reason, memo, igMode, igUploadData, true);
         } else {
           setMessage("投稿を取りやめました");
         }
@@ -1022,6 +1026,31 @@ export default function AdminPage() {
   );
 }
 
+/** アップロード画像をブラウザ側で最大1080pxのJPEG dataURLに縮小する（送信を軽く）。 */
+async function downscaleImage(file: File, maxSize = 1080): Promise<string> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("画像を読み込めませんでした"));
+      i.src = url;
+    });
+    const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+    const w = Math.max(1, Math.round(img.width * scale));
+    const h = Math.max(1, Math.round(img.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas未対応");
+    ctx.drawImage(img, 0, 0, w, h);
+    return canvas.toDataURL("image/jpeg", 0.85);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 function badgeStyle(color: string): React.CSSProperties {
   return {
     fontSize: 11,
@@ -1063,7 +1092,9 @@ function ReviewCard({
     action: "approve" | "reject",
     text?: string,
     reason?: string,
-    memo?: string
+    memo?: string,
+    igMode?: string,
+    igUploadData?: string
   ) => void;
   busy: boolean;
 }) {
@@ -1071,6 +1102,10 @@ function ReviewCard({
   const [showSource, setShowSource] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [memo, setMemo] = useState("");
+  const [igMode, setIgMode] = useState<"none" | "press" | "upload">("none");
+  const [igData, setIgData] = useState("");
+  const [igName, setIgName] = useState("");
+  const [igErr, setIgErr] = useState("");
   const weight = tweetWeight(text);
   const over = weight > MAX_TWEET_WEIGHT;
 
@@ -1178,10 +1213,118 @@ function ReviewCard({
         </pre>
       )}
 
+      <div
+        style={{
+          marginTop: 14,
+          padding: "12px 14px",
+          border: `1px solid ${C.border}`,
+          borderRadius: 8,
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Instagram（任意）</div>
+        <div style={{ fontSize: 12, color: C.sub, marginTop: 2, lineHeight: 1.6 }}>
+          既定はXのみ。IGにも出すなら画像を選んでください（IGは画像必須）。
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+          {([
+            ["none", "IGに出さない"],
+            ["press", "プレス画像で出す"],
+            ["upload", "画像をアップロード"],
+          ] as const).map(([mode, label]) => (
+            <button
+              key={mode}
+              onClick={() => {
+                setIgMode(mode);
+                setIgErr("");
+              }}
+              style={{
+                padding: "8px 12px",
+                minHeight: 40,
+                borderRadius: 999,
+                border: `1px solid ${igMode === mode ? C.accent : C.border}`,
+                background: igMode === mode ? "#1d2733" : C.bg,
+                color: igMode === mode ? C.accent : C.sub,
+                cursor: "pointer",
+                fontSize: 13,
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {igMode === "press" && !item.imageUrl && (
+          <div style={{ color: C.warn, fontSize: 12.5, marginTop: 8 }}>
+            ⚠ この記事にはプレス画像がありません。IGには出せません。
+          </div>
+        )}
+        {igMode === "press" && item.imageUrl && (
+          <div style={{ color: C.sub, fontSize: 12.5, marginTop: 8 }}>
+            上のプレス画像をIG向けに整えて投稿します（横長は見切れることがあります）。
+          </div>
+        )}
+
+        {igMode === "upload" && (
+          <div style={{ marginTop: 10 }}>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                setIgErr("");
+                try {
+                  const d = await downscaleImage(f);
+                  setIgData(d);
+                  setIgName(f.name);
+                } catch (err) {
+                  setIgErr(err instanceof Error ? err.message : String(err));
+                  setIgData("");
+                  setIgName("");
+                }
+              }}
+              style={{ fontSize: 13, color: C.sub }}
+            />
+            {igName && (
+              <div style={{ fontSize: 12, color: C.sub, marginTop: 6 }}>選択中: {igName}</div>
+            )}
+            {igErr && (
+              <div style={{ fontSize: 12.5, color: C.danger, marginTop: 6 }}>⚠ {igErr}</div>
+            )}
+            {igData && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={igData}
+                alt=""
+                style={{
+                  maxWidth: 180,
+                  maxHeight: 180,
+                  borderRadius: 8,
+                  marginTop: 8,
+                  display: "block",
+                  border: `1px solid ${C.border}`,
+                }}
+              />
+            )}
+          </div>
+        )}
+      </div>
+
       <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
         <button
-          onClick={() => onAct(item, queue, "approve", text)}
-          disabled={busy || over}
+          onClick={() =>
+            onAct(
+              item,
+              queue,
+              "approve",
+              text,
+              undefined,
+              undefined,
+              igMode,
+              igMode === "upload" ? igData : undefined
+            )
+          }
+          disabled={busy || over || (igMode === "upload" && !igData)}
           style={{
             flex: 1,
             padding: 14,

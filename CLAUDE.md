@@ -53,7 +53,13 @@ X Premium でも **API 経由では280文字（重み）の制限が残る**た�
 
 ## Instagram 同時投稿（2026-09-02 実装）
 
-X 投稿が確定した後に IG へ best-effort でファンアウトする（承認時=action、自動投稿時=scan の両経路）。
+IG は「承認時に人が画像を選んだときだけ」投稿する半自動（2026-09-02 にこの方針へ変更）。
+自動投稿(scan)は X 限定＝IGには出さない。理由：PR TIMES の og:image は横長の告知バナーが多く、
+機械クロップだとIGで不自然になり、ブランド毀損リスクの方が大きいため画像品質を人が担保する。
+承認画面(ReviewCard)で igMode を選ぶ：none(既定・出さない)/press(プレス画像をIGにも)/upload(自分の画像に差し替え)。
+upload はブラウザで1080pxに縮小→dataURLを承認と一緒に送信→action が Redis(v2:ig-upload:guid, TTL1日)に保存→
+署名付き /api/ig/stored がIG向けに整形して配信（範囲外は白余白で収める＝クロップしない）。
+press は /api/ig/image で最適化。IGの失敗はX投稿を巻き戻さない。
 - 方式：Instagram API with Instagram Login（`graph.instagram.com`）。`lib/instagram.ts` の
   `postInstagram()` が「コンテナ作成→media_publish」の2段階で投稿。IGは**画像必須**なので
   画像が無い項目はIGだけスキップ（Xは出す）。IG失敗はXを巻き戻さない。

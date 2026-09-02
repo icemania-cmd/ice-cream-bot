@@ -105,6 +105,30 @@ export async function postInstagram(
       return { success: false, error: `container応答にidなし: ${create.text.slice(0, 200)}` };
     }
 
+    // 1.5) コンテナが公開可能になるまで待つ。
+    // IG は image_url を自分で取得・処理してからでないと publish できない。
+    // 特にプロキシでその場生成する画像は、即 publish すると「まだ準備中」で弾かれる。
+    // status_code が FINISHED になるのを待ってから公開する（画像は通常数秒）。
+    for (let i = 0; i < 10; i++) {
+      const st = await igFetch(
+        `${GRAPH}/${VERSION}/${creationId}?fields=status_code&access_token=${encodeURIComponent(token)}`
+      );
+      let code = "";
+      try {
+        code = (JSON.parse(st.text)?.status_code as string) || "";
+      } catch {
+        /* まれにHTMLが返る。次のループで見直す */
+      }
+      if (code === "FINISHED") break;
+      if (code === "ERROR" || code === "EXPIRED") {
+        return { success: false, error: `container ${code}: ${st.text.slice(0, 200)}` };
+      }
+      if (i === 9) {
+        return { success: false, error: `container が準備中のままです（最後の状態: ${code || "不明"}）` };
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+
     // 2) 公開
     const publish = await igFetch(
       `${GRAPH}/${VERSION}/${igUserId}/media_publish`,

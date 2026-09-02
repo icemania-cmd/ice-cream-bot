@@ -537,6 +537,28 @@ export default function AdminPage() {
     }
   }
 
+  /** IG診断：手動取得欄のURLで、IGコンテナ作成だけ試して生の結果を表示（投稿はしない）。 */
+  async function igSelftest() {
+    const url = manualUrl.trim();
+    if (!url) {
+      setMessage("上の欄にURLを入れてから「IG診断」を押してください");
+      return;
+    }
+    setIngesting(true);
+    setMessage("IG診断中...");
+    try {
+      const res = await fetch(`/api/ig/selftest?url=${encodeURIComponent(url)}`, {
+        headers: { "x-admin-secret": secret },
+      });
+      const json = await res.json();
+      setMessage("IG診断結果: " + JSON.stringify(json.結果 ?? json));
+    } catch (e) {
+      setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setIngesting(false);
+    }
+  }
+
   if (!authed) {
     return (
       <main style={{ maxWidth: 420, margin: "0 auto", padding: "80px 20px" }}>
@@ -824,6 +846,24 @@ export default function AdminPage() {
             }}
           >
             {ingesting ? "取得中..." : "取得して承認待ちへ"}
+          </button>
+          <button
+            onClick={() => void igSelftest()}
+            disabled={ingesting || !manualUrl.trim()}
+            title="このURLの画像でIGコンテナ作成だけ試します（投稿はしません）"
+            style={{
+              padding: "10px 16px",
+              minHeight: 44,
+              borderRadius: 8,
+              border: `1px solid ${C.border}`,
+              background: C.card,
+              color: C.sub,
+              fontSize: 13,
+              cursor: ingesting || !manualUrl.trim() ? "default" : "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            IG診断
           </button>
         </div>
       </div>

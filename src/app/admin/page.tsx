@@ -29,6 +29,7 @@ interface PostedSummary {
   tweetId?: string;
   postedAt: string;
   route: string;
+  ig?: string;
 }
 
 interface RunLog {
@@ -58,6 +59,7 @@ interface QueueData {
   review: QueuedItem[];
   ready: QueuedItem[];
   posted: PostedSummary[];
+  rejected: QueuedItem[];
   runs: RunLog[];
   counts: { ready: number; review: number };
   rate: RateStatus;
@@ -127,7 +129,9 @@ export default function AdminPage() {
   const [secret, setSecret] = useState("");
   const [authed, setAuthed] = useState(false);
   const [data, setData] = useState<QueueData | null>(null);
-  const [tab, setTab] = useState<"review" | "ready" | "posted" | "runs">(
+  const [tab, setTab] = useState<
+    "review" | "ready" | "posted" | "rejected" | "runs"
+  >(
     "review"
   );
   const [message, setMessage] = useState("");
@@ -512,6 +516,27 @@ export default function AdminPage() {
     }
   }
 
+  /** 却下した項目を承認待ちへ戻す。 */
+  async function restoreItem(guid: string) {
+    setLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch("/api/admin/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-secret": secret },
+        body: JSON.stringify({ guid, action: "restore" }),
+      });
+      const json = await res.json();
+      setMessage(res.ok ? `✅ ${json.action}` : `❌ ${json.error}`);
+      if (res.ok) setTab("review");
+      await load(secret);
+    } catch (e) {
+      setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   if (!authed) {
     return (
       <main style={{ maxWidth: 420, margin: "0 auto", padding: "80px 20px" }}>
@@ -567,6 +592,7 @@ export default function AdminPage() {
     { key: "review", label: "承認待ち", count: data?.review.length ?? 0 },
     { key: "ready", label: "投稿待ち", count: data?.ready.length ?? 0 },
     { key: "posted", label: "投稿済み", count: data?.posted.length ?? 0 },
+    { key: "rejected", label: "却下", count: data?.rejected?.length ?? 0 },
     { key: "runs", label: "実行ログ", count: data?.runs.length ?? 0 },
   ];
 
@@ -861,6 +887,12 @@ export default function AdminPage() {
                 {new Date(p.postedAt).toLocaleString("ja-JP")} ・{" "}
                 {p.route === "auto" ? "自動投稿" : "承認して投稿"}
               </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                <span style={badgeStyle(C.ok)}>X 投稿済み</span>
+                {p.ig === "posted" && <span style={badgeStyle(C.ok)}>IG 投稿済み</span>}
+                {p.ig === "skipped" && <span style={badgeStyle(C.sub)}>IG スキップ</span>}
+                {p.ig === "failed" && <span style={badgeStyle(C.danger)}>IG 失敗</span>}
+              </div>
               <p style={{ whiteSpace: "pre-wrap", margin: "8px 0" }}>{p.text}</p>
               {p.tweetId && (
                 <a
@@ -876,6 +908,47 @@ export default function AdminPage() {
           ))
         ) : (
           <Empty text="まだ投稿はありません。" />
+        ))}
+
+      {tab === "rejected" &&
+        (data?.rejected?.length ? (
+          data.rejected.map((item) => (
+            <div key={item.guid} style={cardStyle}>
+              <div style={{ fontSize: 12, color: C.sub }}>
+                {item.corp} ・ 却下済み
+              </div>
+              <a
+                href={item.link}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: C.accent, fontSize: 14, wordBreak: "break-all" }}
+              >
+                {item.title}
+              </a>
+              <p style={{ whiteSpace: "pre-wrap", margin: "8px 0", fontSize: 14 }}>
+                {item.text}
+              </p>
+              <button
+                onClick={() => void restoreItem(item.guid)}
+                disabled={loading}
+                style={{
+                  padding: "10px 18px",
+                  minHeight: 42,
+                  borderRadius: 8,
+                  border: "none",
+                  background: C.accent,
+                  color: "#0f1115",
+                  fontWeight: 700,
+                  fontSize: 14,
+                  cursor: "pointer",
+                }}
+              >
+                承認待ちに戻す
+              </button>
+            </div>
+          ))
+        ) : (
+          <Empty text="却下した項目はありません（保存期間内のもののみ表示）。" />
         ))}
 
       {tab === "runs" &&
@@ -907,6 +980,19 @@ export default function AdminPage() {
         ))}
     </main>
   );
+}
+
+function badgeStyle(color: string): React.CSSProperties {
+  return {
+    fontSize: 11,
+    fontWeight: 700,
+    padding: "2px 8px",
+    borderRadius: 999,
+    color,
+    border: `1px solid ${color}`,
+    background: "transparent",
+    display: "inline-block",
+  };
 }
 
 const cardStyle: React.CSSProperties = {

@@ -14,6 +14,7 @@ import {
   recordFeedback,
   rememberStyleSample,
   reject,
+  unreject,
   rememberPostedProduct,
   releaseClaim,
   type QueueName,
@@ -47,6 +48,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 却下の取り消し（承認待ちへ戻す）。review/ready のどちらでもない操作なので先に処理する。
+    if (action === "restore") {
+      const ok = await unreject(guid);
+      return NextResponse.json(
+        ok
+          ? { ok: true, action: "承認待ちに戻しました" }
+          : { error: "復元できませんでした（保存期限切れの可能性）" },
+        { status: ok ? 200 : 404 }
+      );
+    }
+
     const item = await getQueued(queue, guid);
     if (!item) {
       return NextResponse.json(
@@ -70,7 +82,7 @@ export async function POST(request: NextRequest) {
         memo: typeof body.memo === "string" ? body.memo.slice(0, 500) : "",
         draftText: item.text,
       }).catch(() => undefined); // 記録の失敗で却下操作を止めない
-      await reject(guid);
+      await reject(guid, item);
       return NextResponse.json({ ok: true, action: "却下しました" });
     }
 
@@ -189,6 +201,16 @@ export async function POST(request: NextRequest) {
     }
 
     await rememberPostedProduct(item.productName);
+
+    // X投稿が確定した後で、IGにも best-effort で流す（画像必須）。
+    // IGの失敗はX投稿を巻き戻さない。結果は投稿済み記録にも残す。
+    let igNote = "";
+    let igStatus: string | undefined;
+    const ig = await postInstagram(item.imageUrl, text);
+    if (ig.success) { igNote = "IGにも投稿"; igStatus = "posted"; }
+    else if (ig.skipped) { igNote = `IGスキップ(${ig.reason})`; igStatus = "skipped"; }
+    else { igNote = `IG投稿失敗(${ig.error})`; igStatus = "failed"; }
+
     await markPosted(guid, {
       title: item.title,
       link: item.link,
@@ -197,17 +219,10 @@ export async function POST(request: NextRequest) {
       imageUrl: item.imageUrl,
       releaseDate: item.releaseDate,
       route: "approved",
+      ig: igStatus,
     });
     await recordPost();
     await dequeue(queue, guid);
-
-    // X投稿が確定した後で、IGにも best-effort で流す。
-    // IGの失敗はX投稿を巻き戻さない（既に世に出ているため）。IGは画像必須。
-    let igNote = "";
-    const ig = await postInstagram(item.imageUrl, text);
-    if (ig.success) igNote = "IGにも投稿";
-    else if (ig.skipped) igNote = `IGスキップ(${ig.reason})`;
-    else igNote = `IG投稿失敗(${ig.error})`;
 
     return NextResponse.json({
       ok: true,

@@ -40,6 +40,7 @@ const K = {
   lastPost: "v2:lastpost",
   daily: (jstDate: string) => `v2:daily:${jstDate}`,
   postItem: (guid: string) => `v2:post:${guid}`,
+  rejectedItem: (guid: string) => `v2:rejected-item:${guid}`,
 };
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -126,6 +127,8 @@ export async function markPosted(
     imageUrl?: string;
     releaseDate?: string;
     route: "auto" | "approved";
+    /** IG同時投稿の結果。"posted" | "skipped" | "failed" */
+    ig?: string;
   }
 ): Promise<void> {
   const now = Date.now();
@@ -332,15 +335,50 @@ export async function queueSize(q: QueueName): Promise<number> {
   return (await redis.zcard(queueKey(q))) as number;
 }
 
-export async function reject(guid: string): Promise<void> {
+export async function reject(guid: string, item?: QueuedItem): Promise<void> {
   const pipe = redis.pipeline();
   pipe.zadd(K.rejected, { score: Date.now(), member: guid });
   pipe.zrem(queueKey("review"), guid);
   pipe.zrem(queueKey("ready"), guid);
   pipe.del(queueItemKey("review", guid));
   pipe.del(queueItemKey("ready", guid));
+  // 復元できるよう、却下した項目の本体を保存しておく（TTLは投稿済みと同じ）。
+  if (item) {
+    pipe.set(K.rejectedItem(guid), JSON.stringify(item), {
+      ex: TTL_POSTED_DAYS * 86400,
+    });
+  }
   pipe.sadd(handledKey(0), guid);
   await pipe.exec();
+}
+
+/** 却下した項目の一覧（新しい順）。本体が残っている（＝復元可能な）ものだけ返す。 */
+export async function listRejected(limit = 30): Promise<QueuedItem[]> {
+  const guids = (await redis.zrange(K.rejected, 0, limit - 1, {
+    rev: true,
+  })) as string[];
+  if (guids.length === 0) return [];
+  const pipe = redis.pipeline();
+  for (const g of guids) pipe.get(K.rejectedItem(g));
+  const raws = await pipe.exec();
+  const items: QueuedItem[] = [];
+  raws.forEach((raw) => {
+    const item = parse<QueuedItem>(raw);
+    if (item) items.push(item);
+  });
+  return items;
+}
+
+/** 却下を取り消して承認待ちへ戻す。本体が残っていれば true。 */
+export async function unreject(guid: string): Promise<boolean> {
+  const item = parse<QueuedItem>(await redis.get(K.rejectedItem(guid)));
+  if (!item) return false;
+  await enqueue("review", item);
+  const pipe = redis.pipeline();
+  pipe.zrem(K.rejected, guid);
+  pipe.del(K.rejectedItem(guid));
+  await pipe.exec();
+  return true;
 }
 
 // ===== 運用設定（管理画面から変更できる）=====
@@ -515,6 +553,8 @@ export interface PostedSummary {
   tweetId?: string;
   postedAt: string;
   route: string;
+  /** IG同時投稿の結果。"posted" | "skipped" | "failed" | undefined(未対応時) */
+  ig?: string;
 }
 
 export async function listPosted(limit = 20): Promise<PostedSummary[]> {

@@ -17,6 +17,7 @@ import {
   acquireRunLock,
   appendRunLog,
   claimForPost,
+  dequeue,
   enqueue,
   filterUnhandled,
   findSimilarPostedProduct,
@@ -94,6 +95,15 @@ export async function GET(request: NextRequest) {
       log.notes.push(rate.reason || "投稿枠なし");
       return false;
     }
+    // 同一商品を既に投稿済みなら二重投稿を防ぐ（掃除をすり抜けた同一run内の重複も止める）
+    if (item.productName) {
+      const twin = await findSimilarPostedProduct(item.productName);
+      if (twin) {
+        await dequeue("ready", item.guid);
+        log.notes.push(`重複のため投稿せず除去（投稿済み: 「${twin}」）: ${item.title}`);
+        return false;
+      }
+    }
     // cron の二重配信・同時実行に備えて記事単位の投稿権を取る
     if (!(await claimForPost(item.guid))) {
       log.notes.push(`他の実行が処理中のためスキップ: ${item.title}`);
@@ -132,6 +142,15 @@ export async function GET(request: NextRequest) {
     }
 
     await rememberPostedProduct(item.productName);
+
+    // X投稿が確定した後で、IGにも best-effort で流す（IGは画像必須）。
+    // IGの失敗はログに残すだけで、自動投稿フロー自体は成功として扱う。結果は投稿済み記録に残す。
+    let igStatus: string | undefined;
+    const ig = await postInstagram(item.imageUrl, item.text);
+    if (ig.success) { igStatus = "posted"; log.notes.push(`IGにも投稿: ${item.title}`); }
+    else if (ig.skipped) { igStatus = "skipped"; }
+    else { igStatus = "failed"; log.errors.push(`IG投稿失敗(${item.title}): ${ig.error}`); }
+
     await markPosted(item.guid, {
       title: item.title,
       link: item.link,
@@ -140,15 +159,10 @@ export async function GET(request: NextRequest) {
       imageUrl: item.imageUrl,
       releaseDate: item.releaseDate,
       route: "auto",
+      ig: igStatus,
     });
     // markPosted が ready/review からの削除も済ませているので dequeue は不要
     await recordPost();
-
-    // X投稿が確定した後で、IGにも best-effort で流す（IGは画像必須）。
-    // IGの失敗はログに残すだけで、自動投稿フロー自体は成功として扱う。
-    const ig = await postInstagram(item.imageUrl, item.text);
-    if (ig.success) log.notes.push(`IGにも投稿: ${item.title}`);
-    else if (!ig.skipped) log.errors.push(`IG投稿失敗(${item.title}): ${ig.error}`);
     postsThisRun++;
     log.posted++;
     details.push({
@@ -170,7 +184,22 @@ export async function GET(request: NextRequest) {
 
   try {
     // ---- 1. 投稿待ちキューを先に捌く（古い順＝速報性優先）----
-    const ready = await listQueue("ready", 20);
+    const readyAll = await listQueue("ready", 20);
+    // 重複掃除：同一商品を既に投稿済みの残骸が投稿待ちに残っていたら取り除く。
+    // 同じ商品が PR TIMES と @Press 等、別guidで二重登録され、片方だけ投稿された
+    // 場合に起きる（markPosted は投稿した guid しか消さないため）。自動投稿OFFでも走る。
+    const ready: QueuedItem[] = [];
+    for (const item of readyAll) {
+      if (!dryRun && item.productName) {
+        const twin = await findSimilarPostedProduct(item.productName);
+        if (twin) {
+          await dequeue("ready", item.guid);
+          log.notes.push(`重複を投稿待ちから除去（投稿済み: 「${twin}」）: ${item.title}`);
+          continue;
+        }
+      }
+      ready.push(item);
+    }
     if (dryRun) {
       for (const item of ready) {
         details.push({

@@ -4,6 +4,7 @@ import {
   getRateStatus,
   listPosted,
   listQueue,
+  listRejected,
   listRunLogs,
   queueSize,
 } from "@/lib/store";
@@ -16,11 +17,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   try {
-    const [review, ready, posted, runs, readyCount, reviewCount, rate] =
+    const [review, ready, posted, rejected, runs, readyCount, reviewCount, rate] =
       await Promise.all([
         listQueue("review", 50),
         listQueue("ready", 20),
         listPosted(20),
+        listRejected(30),
         listRunLogs(10),
         queueSize("ready"),
         queueSize("review"),
@@ -30,6 +32,7 @@ export async function GET(request: NextRequest) {
       review,
       ready,
       posted,
+      rejected,
       runs,
       counts: { ready: readyCount, review: reviewCount },
       rate,

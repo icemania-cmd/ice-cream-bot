@@ -436,10 +436,11 @@ export default function AdminPage() {
     igMode?: string,
     igUploadData?: string,
     igPickUrl?: string,
-    confirmDuplicate = false
+    confirmDuplicate = false,
+    confirmUnverified = false
   ) {
     // 却下はカード側で理由を選ばせているので、ここでの確認は挟まない
-    if (!confirmDuplicate && action === "approve") {
+    if (!confirmDuplicate && !confirmUnverified && action === "approve") {
       if (!confirm(`このままXへ投稿します:\n\n${text}`)) return;
     }
 
@@ -463,15 +464,28 @@ export default function AdminPage() {
           igUploadData,
           igPickUrl,
           confirmDuplicate,
+          confirmUnverified,
         }),
       });
       const json = await res.json();
+
+      // 原文で裏が取れない数字がある。ここは1タップで通さない。
+      // 誤情報が世に出ると、直すのに何倍も手間がかかる。
+      if (res.status === 409 && json.needsFactConfirm) {
+        setLoading(false);
+        if (confirm(json.error)) {
+          await act(item, queue, action, text, reason, memo, igMode, igUploadData, igPickUrl, confirmDuplicate, true);
+        } else {
+          setMessage("投稿を取りやめました。原文を確認してから文面を直してください");
+        }
+        return;
+      }
 
       // 同じ商品を投稿済みの可能性。押した操作を握り潰さず、確認したうえで通す
       if (res.status === 409 && json.needsConfirm) {
         setLoading(false);
         if (confirm(json.error)) {
-          await act(item, queue, action, text, reason, memo, igMode, igUploadData, igPickUrl, true);
+          await act(item, queue, action, text, reason, memo, igMode, igUploadData, igPickUrl, true, confirmUnverified);
         } else {
           setMessage("投稿を取りやめました");
         }

@@ -521,3 +521,94 @@ export function verifyPost(params: {
     weight,
   };
 }
+
+/** 投稿直前の最終確認の結果 */
+export interface FinalCheck {
+  /** 形式の違反。絶対に投稿してはいけない */
+  blocking: string[];
+  /** 原文で裏が取れない主張。人が確認しないと出せない */
+  unverified: string[];
+  weight: number;
+}
+
+/**
+ * これから X に出す文そのものを、原文と突き合わせる。
+ *
+ * これまで事実照合はキューに入れる時点で1度しか走っていなかった。
+ * そのため次の2つが無検査のまま外に出ていた。
+ *   (1) 古いコードが作り、キューに残っていた文面
+ *   (2) 人が承認画面で書き換えた文面
+ * 生成の品質をいくら上げても、この経路が空いている限り事故は起きる。
+ * だから投稿の直前に、出す文そのものをもう一度見る。
+ *
+ * 判定の芯は1つだけ:
+ *   「投稿文に出てくる金額と日付は、すべて原文にも存在しなければならない」
+ * 生成側がどう間違えようと、原文に無い数字は外に出せなくなる。
+ */
+export function verifyFinalText(params: {
+  text: string;
+  /** 記事の原文（QueuedItem.sourceExcerpt） */
+  sourceText: string;
+  /** JST の今日（YYYY-MM-DD） */
+  today: string;
+}): FinalCheck {
+  const { text, sourceText, today } = params;
+  const blocking: string[] = [];
+  const unverified: string[] = [];
+  const src = normalize(sourceText);
+  const ntext = normalize(text);
+  const weight = tweetWeight(text);
+
+  if (!text.trim()) blocking.push("投稿本文が空です");
+  if (weight > MAX_TWEET_WEIGHT) {
+    blocking.push(`文字数超過（${weight}/${MAX_TWEET_WEIGHT}）`);
+  }
+  if (URL_RE.test(text)) {
+    blocking.push("投稿文にURLらしき文字列が含まれています");
+  }
+  if (ntext.includes("#")) blocking.push("投稿文にハッシュタグが含まれています");
+  if (EMOJI_RE.test(text)) blocking.push("投稿文に絵文字が含まれています");
+
+  // 原文が手元に無いなら、数字の裏取りはできない。
+  // 「確認できなかった」と言い切る。黙って通さない。
+  if (!src.trim()) {
+    unverified.push(
+      "この項目には原文が保存されていないため、数字の裏取りができません（古い項目の可能性）"
+    );
+    return { blocking, unverified, weight };
+  }
+
+  // ---- 金額: 投稿文の金額はすべて原文にあること ----
+  const srcPrices = new Set(priceOccurrences(src).map((o) => o.value));
+  for (const p of priceOccurrences(ntext)) {
+    if (!srcPrices.has(p.value)) {
+      unverified.push(`価格「${p.value}円」は原文に出てきません`);
+    }
+  }
+
+  // ---- 日付: 投稿文の日付はすべて原文にあること ----
+  const srcDateList = dateOccurrences(src).map((o) => o.value);
+  const srcDates = new Set(srcDateList);
+  for (const d of dateOccurrences(ntext)) {
+    if (!srcDates.has(d.value)) {
+      unverified.push(`日付「${d.value}」は原文に出てきません`);
+    }
+  }
+
+  // ---- 「発売中」と、まだ来ていない発売日は両立しない ----
+  if (/発売中|販売中|好評発売/.test(ntext)) {
+    const future = srcDateList.filter((v) => v > today);
+    const past = srcDateList.filter((v) => v <= today);
+    if (future.length > 0 && past.length === 0) {
+      unverified.push(
+        `「発売中」とありますが、原文の日付（${future.sort()[0]}）はまだ先です`
+      );
+    }
+  }
+
+  return {
+    blocking,
+    unverified: Array.from(new Set(unverified)),
+    weight,
+  };
+}

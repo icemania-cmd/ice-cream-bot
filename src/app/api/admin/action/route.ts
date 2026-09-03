@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAdmin } from "@/lib/auth";
-import { MAX_TWEET_WEIGHT } from "@/lib/config";
-import { tweetWeight } from "@/lib/verify";
+import { verifyFinalText } from "@/lib/verify";
 import { postTweet, uploadMedia } from "@/lib/x";
 import { postInstagram, optimizedImageUrl, storedImageUrl } from "@/lib/instagram";
 import {
@@ -9,6 +8,7 @@ import {
   dequeue,
   findSimilarPostedProduct,
   getQueued,
+  jstDateString,
   markPosted,
   recordPost,
   recordFeedback,
@@ -99,17 +99,39 @@ export async function POST(request: NextRequest) {
         ? body.text.trim()
         : item.text;
 
-    const weight = tweetWeight(text);
-    if (weight > MAX_TWEET_WEIGHT) {
+    // ここまで、承認経路の検査は「長さ」と「URL」だけだった。
+    // そのため古いコードが作った文面や、承認画面で書き換えた文面が
+    // 事実照合を一度も通らずに X へ出ていた。
+    // 出す文そのものを、投稿の直前にもう一度突き合わせる。
+    const finalCheck = verifyFinalText({
+      text,
+      sourceText: item.sourceExcerpt || "",
+      today: jstDateString(),
+    });
+
+    if (finalCheck.blocking.length > 0) {
       return NextResponse.json(
-        { error: `本文が長すぎます（${weight}/${MAX_TWEET_WEIGHT}）` },
+        {
+          error: `この文面は投稿できません: ${finalCheck.blocking.join(" / ")}`,
+          投稿できない理由: finalCheck.blocking,
+        },
         { status: 400 }
       );
     }
-    if (/(https?:\/\/|www\.)/i.test(text)) {
+
+    // 原文に無い数字は、人が「それでも出す」と言うまで出さない。
+    // 押した操作を機械が握り潰さないが、素通りもさせない。
+    if (finalCheck.unverified.length > 0 && body.confirmUnverified !== true) {
       return NextResponse.json(
-        { error: "本文にURLが含まれています" },
-        { status: 400 }
+        {
+          needsFactConfirm: true,
+          unverified: finalCheck.unverified,
+          error:
+            "原文で確認できない内容があります:\n\n" +
+            finalCheck.unverified.map((u) => `・${u}`).join("\n") +
+            "\n\n原文を確認しましたか？ このまま投稿しますか？",
+        },
+        { status: 409 }
       );
     }
 

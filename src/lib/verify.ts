@@ -522,6 +522,42 @@ export function verifyPost(params: {
   };
 }
 
+
+/**
+ * "M-D" 形式の日付を、今日を基準にした実際の時刻へ解決する。
+ *
+ * 原文の日付には年が入らないことが多い（「9月7日」）。
+ * 単純な文字列比較にすると "9-7" > "2026-09-03" が常に真になり、
+ * すべての日付が未来扱いになる。年またぎもあるので、今日から
+ * 半年以上ずれていたら隣の年とみなす。
+ *
+ * 「9-上旬」のような曖昧な値は日を特定できないので null を返し、
+ * 比較の対象から外す。曖昧なものを勝手に丸めると誤警告になる。
+ */
+function resolveDateMs(canonical: string, today: string): number | null {
+  const d = canonical.match(/^(\d{1,2})-(\d{1,2})$/);
+  const t = today.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!d || !t) return null;
+
+  const year = Number(t[1]);
+  const todayMs = Date.UTC(year, Number(t[2]) - 1, Number(t[3]));
+  const month = Number(d[1]);
+  const day = Number(d[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+  const HALF_YEAR = 183 * 24 * 60 * 60 * 1000;
+  let ms = Date.UTC(year, month - 1, day);
+  if (ms - todayMs < -HALF_YEAR) ms = Date.UTC(year + 1, month - 1, day);
+  else if (ms - todayMs > HALF_YEAR) ms = Date.UTC(year - 1, month - 1, day);
+  return ms;
+}
+
+function todayMsOf(today: string): number | null {
+  const t = today.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!t) return null;
+  return Date.UTC(Number(t[1]), Number(t[2]) - 1, Number(t[3]));
+}
+
 /** 投稿直前の最終確認の結果 */
 export interface FinalCheck {
   /** 形式の違反。絶対に投稿してはいけない */
@@ -597,12 +633,21 @@ export function verifyFinalText(params: {
 
   // ---- 「発売中」と、まだ来ていない発売日は両立しない ----
   if (/発売中|販売中|好評発売/.test(ntext)) {
-    const future = srcDateList.filter((v) => v > today);
-    const past = srcDateList.filter((v) => v <= today);
-    if (future.length > 0 && past.length === 0) {
-      unverified.push(
-        `「発売中」とありますが、原文の日付（${future.sort()[0]}）はまだ先です`
-      );
+    const base = todayMsOf(today);
+    // 日を特定できる日付だけで判断する。「9月上旬」のような値は数に入れない。
+    const resolved = srcDateList
+      .map((v) => ({ v, ms: resolveDateMs(v, today) }))
+      .filter((x): x is { v: string; ms: number } => x.ms !== null);
+
+    if (base !== null && resolved.length > 0) {
+      const future = resolved.filter((x) => x.ms > base);
+      const past = resolved.filter((x) => x.ms <= base);
+      if (future.length > 0 && past.length === 0) {
+        const earliest = future.reduce((a, b) => (a.ms <= b.ms ? a : b));
+        unverified.push(
+          `「発売中」とありますが、原文の日付（${earliest.v}）はまだ先です`
+        );
+      }
     }
   }
 

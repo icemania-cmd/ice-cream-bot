@@ -1108,6 +1108,30 @@ function Empty({ text }: { text: string }) {
   );
 }
 
+/**
+ * 本文からURLを落とす。
+ *
+ * X はリンクの付いた投稿が伸びにくいため、投稿文にURLは入れない。
+ * 記事へはカード内のリンクから飛べるので、本文に置く必要がない。
+ * すでにキューに入っている古い項目にもこの場で効かせる
+ * （毎回手で消す作業が残ると、そのうち消し忘れる）。
+ */
+function stripUrls(text: string): string {
+  const out: string[] = [];
+  for (const line of (text || "").split("\n")) {
+    const hadUrl = /https?:\/\/\S+/.test(line);
+    // URLを抜いた跡に空白が二重に残らないようにする
+    const cleaned = line
+      .replace(/https?:\/\/\S+/g, "")
+      .replace(/[ \u3000]{2,}/g, " ")
+      .trimEnd();
+    // URLだけの行は行ごと落とす。URL以外が残る行は残す。
+    if (hadUrl && cleaned.trim() === "") continue;
+    out.push(cleaned);
+  }
+  return out.join("\n").trim();
+}
+
 function ReviewCard({
   item,
   queue,
@@ -1129,7 +1153,7 @@ function ReviewCard({
   ) => void;
   busy: boolean;
 }) {
-  const [text, setText] = useState(item.text);
+  const [text, setText] = useState(stripUrls(item.text));
   const [showSource, setShowSource] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [memo, setMemo] = useState("");

@@ -382,12 +382,14 @@ export async function GET(request: NextRequest) {
             maker: release.corp,
             price: "",
             region: "",
-            text: `${release.title}\n${release.link}`,
+            // URL は入れない。X はリンク付きの投稿が伸びにくいため。
+            // 記事へは承認画面のリンクから飛べるので、本文に置く必要はない。
+            text: release.title,
             blocking: [],
             warnings: [
               isWatch
-                ? "あいぱく関連の記事です（新商品の告知ではありません）。文面は書き足してください。"
-                : `${noticeLabel}の記事です（新商品の告知ではありません）。文面は書き足してください。`,
+                ? "あいぱく関連の記事です（新商品の告知ではありません）。文面は書き足してください（URLは入れないこと）。"
+                : `${noticeLabel}の記事です（新商品の告知ではありません）。文面は書き足してください（URLは入れないこと）。`,
               extraction.reason,
             ].filter(Boolean),
             sourceExcerpt: sourceText.slice(0, 4000),

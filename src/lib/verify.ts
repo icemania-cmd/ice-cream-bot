@@ -1,4 +1,6 @@
-import { MAX_TWEET_WEIGHT, POST_PREFIX, tweetWeight } from "./config";
+import { MAX_TWEET_WEIGHT, POST_PREFIX, tweetWeight,
+  MAX_EMOJI,
+} from "./config";
 import type { Extraction } from "./classify";
 
 /**
@@ -317,8 +319,18 @@ const LOOSE_CLAIMS = ["限定"];
  * 矢印（→ ⇒ など U+2190〜U+21FF）は文章の記号として使うので除外する。
  * アイスマン福留の文体では「濃厚生キャラメル → 8/31(月)発売」のように用いる。
  */
-const EMOJI_RE =
-  /[\u{00A9}\u{00AE}\u{203C}\u{2049}\u{2122}\u{2139}\u{2300}-\u{23FF}\u{2500}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1FAFF}\u{FE0F}\u{20E3}]/u;
+const EMOJI_ALL_RE =
+  /[\u{00A9}\u{00AE}\u{203C}\u{2049}\u{2122}\u{2139}\u{2300}-\u{23FF}\u{2500}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1FAFF}\u{20E3}]/gu;
+
+/**
+ * 絵文字の数。
+ * 異体字セレクタ(U+FE0F)は絵文字そのものではなく修飾なので数に入れない。
+ * 入れると「❤️」のような1文字が2個に数えられる。
+ */
+function countEmoji(text: string): number {
+  return (text.match(EMOJI_ALL_RE) || []).length;
+}
+
 const URL_RE = /(https?:\/\/|www\.|[a-z0-9-]+\.(?:jp|com|net|co\.jp)\b)/i;
 
 export function verifyPost(params: {
@@ -352,7 +364,10 @@ export function verifyPost(params: {
   }
   if (URL_RE.test(text)) blocking.push("投稿文にURLらしき文字列が含まれています");
   if (ntext.includes("#")) blocking.push("投稿文にハッシュタグが含まれています");
-  if (EMOJI_RE.test(text)) blocking.push("投稿文に絵文字が含まれています");
+  const emojiCount = countEmoji(text);
+  if (emojiCount > MAX_EMOJI) {
+    blocking.push(`絵文字が多すぎます（${emojiCount}個／上限${MAX_EMOJI}個）`);
+  }
 
   // ---- 事実照合（1つでも当たれば承認待ちへ）----
 
@@ -603,7 +618,10 @@ export function verifyFinalText(params: {
     blocking.push("投稿文にURLらしき文字列が含まれています");
   }
   if (ntext.includes("#")) blocking.push("投稿文にハッシュタグが含まれています");
-  if (EMOJI_RE.test(text)) blocking.push("投稿文に絵文字が含まれています");
+  const emojiCount = countEmoji(text);
+  if (emojiCount > MAX_EMOJI) {
+    blocking.push(`絵文字が多すぎます（${emojiCount}個／上限${MAX_EMOJI}個）`);
+  }
 
   // 原文が手元に無いなら、数字の裏取りはできない。
   // 「確認できなかった」と言い切る。黙って通さない。

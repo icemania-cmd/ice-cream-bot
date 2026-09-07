@@ -1146,12 +1146,16 @@ function stripUrls(text: string): string {
  * ここはあくまで前もって気づかせるための控え。
  * サーバー側を緩めたときは、こちらも合わせること。
  */
-const HAS_EMOJI =
-  /[\u{00A9}\u{00AE}\u{203C}\u{2049}\u{2122}\u{2139}\u{2300}-\u{23FF}\u{2500}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1FAFF}\u{FE0F}\u{20E3}]/u;
+const EMOJI_ALL =
+  /[\u{00A9}\u{00AE}\u{203C}\u{2049}\u{2122}\u{2139}\u{2300}-\u{23FF}\u{2500}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1FAFF}\u{20E3}]/gu;
+
+/** 絵文字の上限。サーバー側の MAX_EMOJI と同じ値にしておくこと */
+const EMOJI_LIMIT = 2;
 
 function blockingHints(text: string): string[] {
   const out: string[] = [];
-  if (HAS_EMOJI.test(text)) out.push("絵文字が入っています");
+  const n = (text.match(EMOJI_ALL) || []).length;
+  if (n > EMOJI_LIMIT) out.push(`絵文字が${n}個（上限${EMOJI_LIMIT}個）`);
   if (/https?:\/\/|www\./i.test(text)) out.push("URLが入っています");
   return out;
 }

@@ -109,3 +109,15 @@ export const TTL_SEEN_DAYS = 45;
 export const TTL_POSTED_DAYS = 120;
 export const TTL_REVIEW_DAYS = 14;
 export const RUN_LOG_KEEP = 60;
+
+/**
+ * 投稿文に許す絵文字の数。
+ *
+ * 当初は「絵文字は使わない」というルールにしていたが、これは実際の
+ * アイスマン福留の投稿と合っていなかった（末尾に1つ添える形をよく使う）。
+ * 文体の見本を実投稿から取るようにした結果、生成側は絵文字を書くのに
+ * 検証側が投稿を拒否する、という噛み合わない状態になっていた。
+ *
+ * 0 にすれば従来どおり全面禁止に戻る。
+ */
+export const MAX_EMOJI = Number(process.env.MAX_EMOJI || 2);

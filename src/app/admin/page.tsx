@@ -492,7 +492,14 @@ export default function AdminPage() {
         return;
       }
 
-      setMessage(res.ok ? `✅ ${json.action} ${json.imageNote || ""}${json.igNote ? " / " + json.igNote : ""}` : `❌ ${json.error}`);
+      if (!res.ok) {
+        setMessage(`❌ ${json.error}`);
+        // 画面上部のメッセージは、スマホでボタン付近を見ているときに見えない。
+        // 「押しても何も起きない」と誤解させるのが一番まずいので確実に出す。
+        if (action === "approve") window.alert(json.error);
+      } else {
+        setMessage(`✅ ${json.action} ${json.imageNote || ""}${json.igNote ? " / " + json.igNote : ""}`);
+      }
       await load(secret);
     } catch (e) {
       setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
@@ -1132,6 +1139,23 @@ function stripUrls(text: string): string {
   return out.join("\n").trim();
 }
 
+/**
+ * 投稿できない文字が入っていないかを、押す前に画面で知らせるための簡易判定。
+ *
+ * 正となる判定はサーバー側（verify.ts の verifyFinalText）にある。
+ * ここはあくまで前もって気づかせるための控え。
+ * サーバー側を緩めたときは、こちらも合わせること。
+ */
+const HAS_EMOJI =
+  /[\u{00A9}\u{00AE}\u{203C}\u{2049}\u{2122}\u{2139}\u{2300}-\u{23FF}\u{2500}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1FAFF}\u{FE0F}\u{20E3}]/u;
+
+function blockingHints(text: string): string[] {
+  const out: string[] = [];
+  if (HAS_EMOJI.test(text)) out.push("絵文字が入っています");
+  if (/https?:\/\/|www\./i.test(text)) out.push("URLが入っています");
+  return out;
+}
+
 function ReviewCard({
   item,
   queue,
@@ -1240,6 +1264,11 @@ function ReviewCard({
       />
       <div style={{ fontSize: 12, color: over ? C.danger : C.sub }}>
         {weight} / {MAX_TWEET_WEIGHT}
+        {blockingHints(text).map((h, i) => (
+          <span key={i} style={{ color: C.danger, marginLeft: 10 }}>
+            🛑 {h}（このままでは投稿できません）
+          </span>
+        ))}
       </div>
 
       <button

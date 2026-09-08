@@ -2,7 +2,7 @@ import { MAX_TWEET_WEIGHT } from "@/lib/config";
 import { NextRequest, NextResponse } from "next/server";
 import { fetchReleaseDetail, type Release } from "@/lib/prtimes";
 import { prefilter } from "@/lib/filter";
-import { classifyAndCompose } from "@/lib/classify";
+import { classifyAndCompose, splitProducts } from "@/lib/classify";
 import { verifyPost } from "@/lib/verify";
 import { getStyleSamples, jstDateString } from "@/lib/store";
 
@@ -85,27 +85,31 @@ export async function GET(request: NextRequest) {
   }
 
   const sourceText = `${release.title}\n${release.corp}\n${detail.bodyText}`;
-  const check = verifyPost({
-    extraction,
-    sourceText,
-    today: jstDateString(),
+  // 複数商品なら商品ごとに照合する（scan と同じ扱い）
+  const perProduct = splitProducts(extraction);
+  const 商品ごと = perProduct.map((ex) => {
+    const check = verifyPost({ extraction: ex, sourceText, today: jstDateString() });
+    return {
+      判定: check.autoPostable ? "自動投稿の対象" : "承認待ちに回る",
+      投稿文: check.text,
+      文字数: `${check.weight}/${MAX_TWEET_WEIGHT}`,
+      抽出結果: {
+        商品名: ex.product_name,
+        メーカー: ex.maker,
+        価格: ex.price,
+        発売日: ex.release_date,
+        発売日の原文表記: ex.release_date_text || "(空)",
+        販売エリア: ex.region,
+      },
+      投稿不可の問題: check.blocking,
+      承認待ちに回る理由: check.warnings,
+    };
   });
 
   return NextResponse.json({
-    判定: check.autoPostable ? "自動投稿の対象" : "承認待ちに回る",
+    商品数: perProduct.length,
+    ...(perProduct.length === 1 ? 商品ごと[0] : { 商品ごと }),
     事前フィルタ: pf.passed ? `通過（${pf.reason}）` : `本来は除外（${pf.reason}）`,
-    投稿文: check.text,
-    文字数: `${check.weight}/${MAX_TWEET_WEIGHT}`,
-    抽出結果: {
-      商品名: extraction.product_name,
-      メーカー: extraction.maker,
-      価格: extraction.price,
-      発売日: extraction.release_date,
-      発売日の原文表記: extraction.release_date_text || "(空)",
-      販売エリア: extraction.region,
-    },
-    投稿不可の問題: check.blocking,
-    承認待ちに回る理由: check.warnings,
     画像: release.imageUrl || "(取得できず)",
     配信元の取得結果: release.corp || "(取得できず)",
     注記: "この窓口はXへの投稿も状態の書き換えも行いません",

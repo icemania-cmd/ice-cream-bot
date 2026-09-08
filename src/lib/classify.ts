@@ -35,10 +35,8 @@ export const NOTICE_TOPICS: Record<string, string> = {
   collab: "コラボ・タイアップ",
 };
 
-export interface Extraction {
-  is_ice_cream_new_product: boolean;
-  topic_type: TopicType;
-  reason: string;
+/** 商品1件ぶんの抽出結果 */
+export interface ProductExtraction {
   product_name: string;
   maker: string;
   price: string;
@@ -46,6 +44,37 @@ export interface Extraction {
   release_date_text: string;
   region: string;
   post_text: string;
+}
+
+export interface Extraction extends ProductExtraction {
+  is_ice_cream_new_product: boolean;
+  topic_type: TopicType;
+  reason: string;
+  /**
+   * 記事に載っている商品ごとの結果。1商品なら1件。
+   * 1本のリリースで2商品を告知する形（コンビニに多い）は、
+   * 商品ごとに投稿を分けるためここに並べる。
+   * トップレベルの product_name 等は常に products[0] と同じ。
+   */
+  products: ProductExtraction[];
+}
+
+/** 商品ごとに1件ずつ、独立した Extraction にほどく */
+export function splitProducts(ex: Extraction): Extraction[] {
+  const list = ex.products.length > 0 ? ex.products : [ex];
+  return list.map((pr) => ({
+    is_ice_cream_new_product: ex.is_ice_cream_new_product,
+    topic_type: ex.topic_type,
+    reason: ex.reason,
+    product_name: pr.product_name,
+    maker: pr.maker || ex.maker,
+    price: pr.price,
+    release_date: pr.release_date,
+    release_date_text: pr.release_date_text,
+    region: pr.region,
+    post_text: pr.post_text,
+    products: [pr],
+  }));
 }
 
 /**
@@ -112,6 +141,25 @@ const REPORT_TOOL: Anthropic.Tool = {
         description:
           "X に投稿する本文。is_ice_cream_new_product が false のときは空文字",
       },
+      products: {
+        type: "array",
+        maxItems: 4,
+        description:
+          "このリリースで発売告知されている冷菓を、商品ごとに1件ずつ。1商品なら1件（トップレベルと同じ内容）。別々の商品名で、それぞれ独立した発売告知として成立するものは分ける（例: 2商品で発売日や価格が別々に書かれている）。同じ商品のサイズ違い・パッケージ違い・同一シリーズの味違いをまとめて告知しているだけなら分けない。is_ice_cream_new_product が false なら空配列。",
+        items: {
+          type: "object",
+          properties: {
+            product_name: { type: "string", description: "商品名。原文の表記のまま。『』「」は含めない" },
+            maker: { type: "string", description: "メーカー名。原文の表記のまま" },
+            price: { type: "string", description: "この商品の価格。原文の表記のまま。無ければ空文字。推測しない" },
+            release_date: { type: "string", description: "この商品の発売日 YYYY-MM-DD。無ければ空文字" },
+            release_date_text: { type: "string", description: "発売日の原文表記。無ければ空文字" },
+            region: { type: "string", description: "販売エリア。明記があるときだけ" },
+            post_text: { type: "string", description: "この商品だけを取り上げた投稿文。他の商品には触れない" },
+          },
+          required: ["product_name", "maker", "price", "release_date", "release_date_text", "region", "post_text"],
+        },
+      },
     },
     required: [
       "is_ice_cream_new_product",
@@ -124,6 +172,7 @@ const REPORT_TOOL: Anthropic.Tool = {
       "release_date_text",
       "region",
       "post_text",
+      "products",
     ],
   },
 };
@@ -195,6 +244,13 @@ store / event / collab は投稿文を作りません（post_text は空文字�
 本文: メーカー名と商品名、発売日、販売形態。続けて味・食感・構成を1〜2文で具体的に
 末尾: 「価格：」「販売エリア＝」のラベルと、読者への呼びかけ
 
+【複数商品のとき】
+- 1本のリリースで2つ以上の商品を告知している場合（コンビニのリリースに多い）、products に商品ごとに1件ずつ入れ、投稿文も商品ごとに別々に書く。1つの投稿文に2商品を詰め込まない
+- 分ける基準: 別々の商品名で、それぞれに発売日や価格が書かれている
+- 分けない基準: 同じ商品のサイズ違い・パッケージ違い、同一シリーズの味違いをまとめて告知しているだけ
+- 各商品の価格・発売日は、その商品の記述から取る。別の商品の値を混ぜない
+- トップレベルの product_name 等は products の1件目と同じにする
+
 【表記のルール】（この形を必ず守る）
 - 冒頭は必ず「${POST_PREFIX}」で始める
 - 日付は「9/21(月)」のようにスラッシュ表記。曜日は原文に書かれている場合のみ括弧で付ける。書かれていなければ「9/21」だけにする
@@ -260,18 +316,50 @@ export async function classifyAndCompose(
   const raw = toolUse.input as Partial<Extraction>;
   const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
-  let postText = str(raw.post_text);
+  const isProduct = raw.is_ice_cream_new_product === true;
 
   // 長さ超過は「投稿不可」になってしまい、内容が正しくても世に出ない。
   // 指示だけでは守りきれないので、上限を下回るまで短縮を繰り返す。
   // 1回だけだと「短くはなったがまだ超過」で終わることがある（実測289字）。
-  if (raw.is_ice_cream_new_product === true) {
+  const fit = async (text: string): Promise<string> => {
+    let t = text;
+    if (!isProduct) return t;
     for (let attempt = 0; attempt < 3; attempt++) {
-      if (tweetWeight(postText) <= MAX_TWEET_WEIGHT) break;
-      const shorter = await shorten(postText, attempt);
-      if (shorter === postText) break; // これ以上縮まらない
-      postText = shorter;
+      if (tweetWeight(t) <= MAX_TWEET_WEIGHT) break;
+      const shorter = await shorten(t, attempt);
+      if (shorter === t) break; // これ以上縮まらない
+      t = shorter;
     }
+    return t;
+  };
+
+  const isoDate = (v: unknown) =>
+    /^\d{4}-\d{2}-\d{2}$/.test(str(v)) ? str(v) : "";
+
+  // 商品ごとの結果。無ければトップレベルを1件として扱う（旧い応答との互換）。
+  const rawProducts = Array.isArray((raw as { products?: unknown }).products)
+    ? ((raw as { products: unknown[] }).products as Partial<ProductExtraction>[])
+    : [];
+  const products: ProductExtraction[] = [];
+  for (const pr of rawProducts.slice(0, 4)) {
+    if (!pr || typeof pr !== "object") continue;
+    const name = str(pr.product_name);
+    if (!name) continue;
+    products.push({
+      product_name: name,
+      maker: str(pr.maker) || str(raw.maker),
+      price: str(pr.price),
+      release_date: isoDate(pr.release_date),
+      release_date_text: str(pr.release_date_text),
+      region: str(pr.region),
+      post_text: await fit(str(pr.post_text)),
+    });
+  }
+
+  let postText = await fit(str(raw.post_text));
+  if (products.length > 0) {
+    // 1件目をトップレベルの正とする（既存の利用側は product_name 等を見る）
+    postText = products[0].post_text || postText;
   }
 
   const TOPICS: TopicType[] = [
@@ -290,19 +378,21 @@ export async function classifyAndCompose(
       ? "new_product"
       : "other_ice";
 
+  const first = products[0];
   return {
-    is_ice_cream_new_product: raw.is_ice_cream_new_product === true,
+    is_ice_cream_new_product: isProduct,
     topic_type: topic,
     reason: str(raw.reason),
-    product_name: str(raw.product_name),
-    maker: str(raw.maker),
-    price: str(raw.price),
-    release_date: /^\d{4}-\d{2}-\d{2}$/.test(str(raw.release_date))
-      ? str(raw.release_date)
-      : "",
-    release_date_text: str(raw.release_date_text),
-    region: str(raw.region),
+    product_name: first ? first.product_name : str(raw.product_name),
+    maker: first ? first.maker : str(raw.maker),
+    price: first ? first.price : str(raw.price),
+    release_date: first ? first.release_date : isoDate(raw.release_date),
+    release_date_text: first
+      ? first.release_date_text
+      : str(raw.release_date_text),
+    region: first ? first.region : str(raw.region),
     post_text: postText,
+    products,
   };
 }
 

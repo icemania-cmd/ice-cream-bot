@@ -2,7 +2,7 @@ import { MAX_TWEET_WEIGHT } from "@/lib/config";
 import { NextRequest, NextResponse } from "next/server";
 import { isAdmin } from "@/lib/auth";
 import { fetchReleaseDetail, type Release } from "@/lib/prtimes";
-import { classifyAndCompose, NOTICE_TOPICS } from "@/lib/classify";
+import { classifyAndCompose, NOTICE_TOPICS, splitProducts } from "@/lib/classify";
 import { containsWatchTerms } from "@/lib/filter";
 import { isAutoPostPublisher } from "@/lib/trust";
 import { verifyPost } from "@/lib/verify";
@@ -207,65 +207,91 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const check = verifyPost({
-      extraction,
-      sourceText,
-      today: jstDateString(),
-    });
+    // 1本のリリースに複数の商品が載っていれば、商品ごとに分けて積む（scan と同じ扱い）
+    const perProduct = splitProducts(extraction);
+    const split = perProduct.length > 1;
+    const results: {
+      入れた先: string;
+      商品名: string;
+      投稿文: string;
+      文字数: string;
+      承認待ちに回る理由: string[];
+      投稿不可の問題: string[];
+    }[] = [];
 
-    const twin = await findSimilarPostedProduct(extraction.product_name);
-    if (twin) {
-      check.warnings.push(
-        `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）`
-      );
-      check.autoPostable = false;
+    for (let pi = 0; pi < perProduct.length; pi++) {
+      const ex = perProduct[pi];
+      const pguid = split ? `${target}#${pi + 1}` : target;
+      const ptitle = split
+        ? `${release.title}（${pi + 1}/${perProduct.length}: ${ex.product_name}）`
+        : release.title;
+      const check = verifyPost({
+        extraction: ex,
+        sourceText,
+        today: jstDateString(),
+      });
+
+      const twin = await findSimilarPostedProduct(ex.product_name);
+      if (twin) {
+        check.warnings.push(
+          `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）`
+        );
+        check.autoPostable = false;
+      }
+
+      if (!manual && check.autoPostable && isWatch) {
+        check.warnings.push("あいぱく関連の記事のため確認が必要です");
+        check.autoPostable = false;
+      }
+
+      // 自動投稿の門は scan と同じものを通す。
+      // ここを素通りさせると、拾い直した記事だけが大手限定の制限を抜ける。
+      if (!manual && check.autoPostable && !isAutoPostPublisher(release.corp)) {
+        check.warnings.push(
+          `自動投稿の対象外の配信元のため確認が必要です（配信元: ${release.corp || "不明"}）`
+        );
+        check.autoPostable = false;
+      }
+
+      // 手動投入は人の確認を必須にするため、判定を全部通っても承認待ちに置く。
+      const queue = manual ? "review" : check.autoPostable ? "ready" : "review";
+      const item: QueuedItem = {
+        guid: pguid,
+        title: ptitle,
+        link: target,
+        corp: release.corp,
+        publishedAt: release.publishedAt,
+        imageUrl: release.imageUrl,
+        images: detail?.images || [],
+        releaseDate: ex.release_date,
+        productName: ex.product_name,
+        maker: ex.maker,
+        price: ex.price,
+        region: ex.region,
+        text: check.text,
+        blocking: check.blocking,
+        warnings: check.warnings,
+        sourceExcerpt: sourceText.slice(0, 4000),
+        createdAt: new Date().toISOString(),
+        topicType: ex.topic_type,
+      };
+      await enqueue(queue, item);
+      results.push({
+        入れた先: queue === "ready" ? "投稿待ち" : "承認待ち",
+        商品名: ex.product_name,
+        投稿文: check.text,
+        文字数: `${check.weight}/${MAX_TWEET_WEIGHT}`,
+        承認待ちに回る理由: check.warnings,
+        投稿不可の問題: check.blocking,
+      });
     }
-
-    if (!manual && check.autoPostable && isWatch) {
-      check.warnings.push("あいぱく関連の記事のため確認が必要です");
-      check.autoPostable = false;
-    }
-
-    // 自動投稿の門は scan と同じものを通す。
-    // ここを素通りさせると、拾い直した記事だけが大手限定の制限を抜ける。
-    if (!manual && check.autoPostable && !isAutoPostPublisher(release.corp)) {
-      check.warnings.push(
-        `自動投稿の対象外の配信元のため確認が必要です（配信元: ${release.corp || "不明"}）`
-      );
-      check.autoPostable = false;
-    }
-
-    // 手動投入は人の確認を必須にするため、判定を全部通っても承認待ちに置く。
-    const queue = manual ? "review" : check.autoPostable ? "ready" : "review";
-    const item: QueuedItem = {
-      guid: target,
-      title: release.title,
-      link: target,
-      corp: release.corp,
-      publishedAt: release.publishedAt,
-      imageUrl: release.imageUrl,
-      images: detail?.images || [],
-      releaseDate: extraction.release_date,
-      productName: extraction.product_name,
-      maker: extraction.maker,
-      price: extraction.price,
-      region: extraction.region,
-      text: check.text,
-      blocking: check.blocking,
-      warnings: check.warnings,
-      sourceExcerpt: sourceText.slice(0, 4000),
-      createdAt: new Date().toISOString(),
-      topicType: extraction.topic_type,
-    };
-    await enqueue(queue, item);
+    // 分割したときは記事そのものも処理済みにする（scan と同じ理由）
+    if (split) await markHandled([target]);
 
     return NextResponse.json({
       ok: true,
-      入れた先: queue === "ready" ? "投稿待ち" : "承認待ち",
-      投稿文: check.text,
-      文字数: `${check.weight}/${MAX_TWEET_WEIGHT}`,
-      承認待ちに回る理由: check.warnings,
-      投稿不可の問題: check.blocking,
+      件数: results.length,
+      ...(results.length === 1 ? results[0] : { 商品ごと: results }),
     });
   } catch (e) {
     return NextResponse.json(

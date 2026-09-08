@@ -6,7 +6,7 @@ import {
 } from "@/lib/config";
 import { fetchReleaseDetail, fetchReleases, type Release } from "@/lib/prtimes";
 import { prefilter } from "@/lib/filter";
-import { classifyAndCompose, NOTICE_TOPICS } from "@/lib/classify";
+import { classifyAndCompose, NOTICE_TOPICS, splitProducts } from "@/lib/classify";
 import { verifyPost } from "@/lib/verify";
 import { isAutoPostPublisher } from "@/lib/trust";
 import { notifyQueued } from "@/lib/push";
@@ -411,98 +411,116 @@ export async function GET(request: NextRequest) {
           continue;
         }
 
-        const check = verifyPost({ extraction, sourceText, today });
-
-        // 同じ商品を別の記事で二重投稿しないか確認する。
-        // コラボ商品は両社がリリースを出すため、記事ID単位の重複防止では防げない。
-        const twin = await findSimilarPostedProduct(extraction.product_name);
-        if (twin) {
-          check.warnings.push(
-            `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）`
-          );
-          check.autoPostable = false;
+        // 1本のリリースに複数の商品が載っていれば、商品ごとに分けて扱う。
+        // 誤情報の混入（別商品の価格・日付が紛れる）はここで起きやすいので、
+        // 照合も重複確認も商品単位で行う。
+        const perProduct = splitProducts(extraction);
+        const split = perProduct.length > 1;
+        if (split) {
+          log.notes.push(`複数商品を分割: 「${release.title.slice(0, 30)}」→ ${perProduct.length}件`);
         }
+        for (let pi = 0; pi < perProduct.length; pi++) {
+          const ex = perProduct[pi];
+          const pguid = split ? `${release.guid}#${pi + 1}` : release.guid;
+          const ptitle = split
+            ? `${release.title}（${pi + 1}/${perProduct.length}: ${ex.product_name}）`
+            : release.title;
+          const check = verifyPost({ extraction: ex, sourceText, today });
 
-        // あいぱく関連は、新商品告知として成立していても自動投稿しない。
-        if (check.autoPostable && isWatch) {
-          check.warnings.push("あいぱく関連の記事のため確認が必要です");
-          check.autoPostable = false;
-        }
+          // 同じ商品を別の記事で二重投稿しないか確認する。
+          // コラボ商品は両社がリリースを出すため、記事ID単位の重複防止では防げない。
+          const twin = await findSimilarPostedProduct(ex.product_name);
+          if (twin) {
+            check.warnings.push(
+              `同じ商品を既に投稿している可能性があります（投稿済み: 「${twin}」）`
+            );
+            check.autoPostable = false;
+          }
 
-        // 事実照合を通っても、自動投稿は大手の流通・メーカーの配信に限る。
-        // 中小・地方メーカーはリリースの書式が不揃いで、照合を通っても
-        // 読むと違和感が残ることがある。件数も多くないので目視の負担は小さい。
-        if (check.autoPostable && !isAutoPostPublisher(release.corp)) {
-          check.warnings.push(
-            `自動投稿の対象外の配信元のため確認が必要です（配信元: ${release.corp || "不明"}）`
-          );
-          check.autoPostable = false;
-        }
+          // あいぱく関連は、新商品告知として成立していても自動投稿しない。
+          if (check.autoPostable && isWatch) {
+            check.warnings.push("あいぱく関連の記事のため確認が必要です");
+            check.autoPostable = false;
+          }
 
-        const item: QueuedItem = {
-          guid: release.guid,
-          title: release.title,
-          link: release.link,
-          corp: release.corp,
-          publishedAt: release.publishedAt,
-          // RSS の [画像1:] はリリース本体の主画像。og:image は汎用バナーのことがある
-          imageUrl: release.imageUrl || detail?.ogImage,
-          images: detail?.images || [],
-          releaseDate: extraction.release_date,
-          productName: extraction.product_name,
-          maker: extraction.maker,
-          price: extraction.price,
-          region: extraction.region,
-          text: check.text,
-          blocking: check.blocking,
-          warnings: check.warnings,
-          sourceExcerpt: sourceText.slice(0, 4000),
-          createdAt: new Date().toISOString(),
-          topicType: extraction.topic_type,
-        };
+          // 事実照合を通っても、自動投稿は大手の流通・メーカーの配信に限る。
+          // 中小・地方メーカーはリリースの書式が不揃いで、照合を通っても
+          // 読むと違和感が残ることがある。件数も多くないので目視の負担は小さい。
+          if (check.autoPostable && !isAutoPostPublisher(release.corp)) {
+            check.warnings.push(
+              `自動投稿の対象外の配信元のため確認が必要です（配信元: ${release.corp || "不明"}）`
+            );
+            check.autoPostable = false;
+          }
 
-        if (dryRun) {
-          details.push({
-            guid: release.guid,
-            title: release.title,
-            action: check.autoPostable ? "dry-run:自動投稿の対象" : "dry-run:承認待ちの対象",
+          const item: QueuedItem = {
+            guid: pguid,
+            title: ptitle,
+            link: release.link,
+            corp: release.corp,
+            publishedAt: release.publishedAt,
+            // RSS の [画像1:] はリリース本体の主画像。og:image は汎用バナーのことがある
+            imageUrl: release.imageUrl || detail?.ogImage,
+            images: detail?.images || [],
+            releaseDate: ex.release_date,
+            productName: ex.product_name,
+            maker: ex.maker,
+            price: ex.price,
+            region: ex.region,
             text: check.text,
             blocking: check.blocking,
             warnings: check.warnings,
-          });
-          continue;
-        }
+            sourceExcerpt: sourceText.slice(0, 4000),
+            createdAt: new Date().toISOString(),
+            topicType: ex.topic_type,
+          };
 
-        if (check.autoPostable) {
-          if (postsThisRun < MAX_POSTS_PER_RUN) {
-            const done = await publish(item);
-            if (!done) {
+          if (dryRun) {
+            details.push({
+              guid: pguid,
+              title: ptitle,
+              action: check.autoPostable ? "dry-run:自動投稿の対象" : "dry-run:承認待ちの対象",
+              text: check.text,
+              blocking: check.blocking,
+              warnings: check.warnings,
+            });
+            continue;
+          }
+
+          if (check.autoPostable) {
+            if (postsThisRun < MAX_POSTS_PER_RUN) {
+              const done = await publish(item);
+              if (!done) {
+                await enqueue("ready", item);
+                log.queued++;
+                queuedReady.push(item.title);
+              }
+            } else {
               await enqueue("ready", item);
               log.queued++;
               queuedReady.push(item.title);
+              details.push({
+                guid: pguid,
+                title: ptitle,
+                action: "投稿待ちへ",
+              });
             }
           } else {
-            await enqueue("ready", item);
+            await enqueue("review", item);
             log.queued++;
-            queuedReady.push(item.title);
+            queuedReview.push(item.title);
             details.push({
-              guid: release.guid,
-              title: release.title,
-              action: "投稿待ちへ",
+              guid: pguid,
+              title: ptitle,
+              action: "承認待ちへ",
+              blocking: check.blocking,
+              warnings: check.warnings,
             });
           }
-        } else {
-          await enqueue("review", item);
-          log.queued++;
-          queuedReview.push(item.title);
-          details.push({
-            guid: release.guid,
-            title: release.title,
-            action: "承認待ちへ",
-            blocking: check.blocking,
-            warnings: check.warnings,
-          });
         }
+        // 分割したときは記事そのものも処理済みにしておく。
+        // 商品ごとの guid しか記録されないと、次のスキャンで記事が再び候補になる。
+        if (!dryRun && split) await markHandled([release.guid]);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         log.errors.push(`処理エラー(${release.title}): ${msg}`);

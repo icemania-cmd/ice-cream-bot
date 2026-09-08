@@ -548,6 +548,56 @@ export default function AdminPage() {
     }
   }
 
+  /**
+   * すでにキューにある項目を、記事を取り直して商品ごとに分け直す。
+   *
+   * 「複数商品を分ける」仕組みを入れる前に積まれた項目は、
+   * 2商品が1つの文面に詰め込まれたまま残っている。
+   * 記事URLから取り直せば新しい判定で商品ごとに積まれるので、
+   * 分かれたときだけ元の項目を却下する。
+   */
+  async function splitItem(item: QueuedItem, queue: "review" | "ready") {
+    if (!confirm(`記事を取り直して商品ごとに分けます:\n${item.title}\n\n分かれた場合は元の項目を却下します。`)) return;
+    setLoading(true);
+    setMessage("");
+    try {
+      const res = await fetch("/api/admin/requeue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-admin-secret": secret },
+        body: JSON.stringify({ url: item.link, manual: true }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) {
+        setMessage(`❌ ${json.error || json.理由 || "取り直せませんでした"}`);
+        return;
+      }
+      const n = Number(json.件数 || 1);
+      if (n >= 2) {
+        // 分かれたので元の項目は不要。理由つきで却下し、記録にも残す
+        await fetch("/api/admin/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-admin-secret": secret },
+          body: JSON.stringify({
+            guid: item.guid,
+            queue,
+            action: "reject",
+            reason: "other",
+            memo: `商品ごとに${n}件へ分け直した`,
+          }),
+        });
+        setMessage(`✅ ${n}件に分けました。元の項目は却下しています`);
+      } else {
+        setMessage("この記事は1商品と判定されました。文面を取り直しただけで、分けていません");
+      }
+      setTab("review");
+      await load(secret);
+    } catch (e) {
+      setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   /** 却下した項目を承認待ちへ戻す。 */
   async function restoreItem(guid: string) {
     setLoading(true);
@@ -929,6 +979,7 @@ export default function AdminPage() {
               item={item}
               queue="review"
               onAct={act}
+              onSplit={splitItem}
               busy={loading}
             />
           ))
@@ -944,6 +995,7 @@ export default function AdminPage() {
               item={item}
               queue="ready"
               onAct={act}
+              onSplit={splitItem}
               busy={loading}
             />
           ))
@@ -1168,6 +1220,7 @@ function ReviewCard({
   item,
   queue,
   onAct,
+  onSplit,
   busy,
 }: {
   item: QueuedItem;
@@ -1184,6 +1237,7 @@ function ReviewCard({
     imagePickUrl?: string,
     imageUploadData?: string
   ) => void;
+  onSplit: (item: QueuedItem, queue: "review" | "ready") => void;
   busy: boolean;
 }) {
   const [text, setText] = useState(stripUrls(item.text));
@@ -1527,6 +1581,27 @@ function ReviewCard({
           {rejecting ? "やめる" : "却下"}
         </button>
       </div>
+
+      {/(prtimes\.jp|atpress\.ne\.jp)/.test(item.link) && !/#\d+$/.test(item.guid) && (
+        <button
+          onClick={() => onSplit(item, queue)}
+          disabled={busy}
+          title="1本のリリースに2商品以上ある場合、取り直して商品ごとに分けます"
+          style={{
+            marginTop: 10,
+            padding: "8px 14px",
+            minHeight: 40,
+            borderRadius: 8,
+            border: `1px solid ${C.border}`,
+            background: "transparent",
+            color: C.sub,
+            cursor: "pointer",
+            fontSize: 13,
+          }}
+        >
+          商品ごとに分け直す
+        </button>
+      )}
 
       {rejecting && (
         <div

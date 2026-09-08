@@ -433,15 +433,18 @@ export default function AdminPage() {
     text?: string,
     reason?: string,
     memo?: string,
-    igMode?: string,
-    igUploadData?: string,
-    igPickUrl?: string,
+    target?: string,
+    imageMode?: string,
+    imagePickUrl?: string,
+    imageUploadData?: string,
     confirmDuplicate = false,
     confirmUnverified = false
   ) {
     // 却下はカード側で理由を選ばせているので、ここでの確認は挟まない
     if (!confirmDuplicate && !confirmUnverified && action === "approve") {
-      if (!confirm(`このままXへ投稿します:\n\n${text}`)) return;
+      const dest =
+        target === "ig" ? "Instagram" : target === "both" ? "XとInstagram" : "X";
+      if (!confirm(`このまま${dest}へ投稿します:\n\n${text}`)) return;
     }
 
     setLoading(true);
@@ -460,9 +463,10 @@ export default function AdminPage() {
           text,
           reason,
           memo,
-          igMode,
-          igUploadData,
-          igPickUrl,
+          target,
+          imageMode,
+          imagePickUrl,
+          imageUploadData,
           confirmDuplicate,
           confirmUnverified,
         }),
@@ -474,7 +478,7 @@ export default function AdminPage() {
       if (res.status === 409 && json.needsFactConfirm) {
         setLoading(false);
         if (confirm(json.error)) {
-          await act(item, queue, action, text, reason, memo, igMode, igUploadData, igPickUrl, confirmDuplicate, true);
+          await act(item, queue, action, text, reason, memo, target, imageMode, imagePickUrl, imageUploadData, confirmDuplicate, true);
         } else {
           setMessage("投稿を取りやめました。原文を確認してから文面を直してください");
         }
@@ -485,7 +489,7 @@ export default function AdminPage() {
       if (res.status === 409 && json.needsConfirm) {
         setLoading(false);
         if (confirm(json.error)) {
-          await act(item, queue, action, text, reason, memo, igMode, igUploadData, igPickUrl, true, confirmUnverified);
+          await act(item, queue, action, text, reason, memo, target, imageMode, imagePickUrl, imageUploadData, true, confirmUnverified);
         } else {
           setMessage("投稿を取りやめました");
         }
@@ -1175,9 +1179,10 @@ function ReviewCard({
     text?: string,
     reason?: string,
     memo?: string,
-    igMode?: string,
-    igUploadData?: string,
-    igPickUrl?: string
+    target?: string,
+    imageMode?: string,
+    imagePickUrl?: string,
+    imageUploadData?: string
   ) => void;
   busy: boolean;
 }) {
@@ -1185,16 +1190,25 @@ function ReviewCard({
   const [showSource, setShowSource] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [memo, setMemo] = useState("");
-  const [igMode, setIgMode] = useState<"none" | "press" | "upload" | "pick">(
-    "none"
-  );
-  const [igData, setIgData] = useState("");
-  const [igName, setIgName] = useState("");
-  const [igErr, setIgErr] = useState("");
-  const [igPick, setIgPick] = useState("");
+  // 投稿先。既定は X のみ（これまでの挙動と同じ）
+  const [postTarget, setPostTarget] = useState<"x" | "ig" | "both">("x");
+  // 投稿画像。X と IG で同じ画像を使う。既定はプレス画像（これまでの X の挙動と同じ）
   const igCandidates = Array.from(
     new Set([item.imageUrl, ...(item.images || [])].filter(Boolean))
   ) as string[];
+  const [igMode, setIgMode] = useState<"none" | "upload" | "pick">(
+    item.imageUrl ? "pick" : "none"
+  );
+  const [igPick, setIgPick] = useState(item.imageUrl || "");
+  const [igData, setIgData] = useState("");
+  const [igName, setIgName] = useState("");
+  const [igErr, setIgErr] = useState("");
+  // IG は画像なしでは投稿できない
+  const igNeedsImage =
+    postTarget !== "x" &&
+    (igMode === "none" ||
+      (igMode === "pick" && !igPick) ||
+      (igMode === "upload" && !igData));
   const weight = tweetWeight(text);
   const over = weight > MAX_TWEET_WEIGHT;
 
@@ -1315,9 +1329,23 @@ function ReviewCard({
           borderRadius: 8,
         }}
       >
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Instagram（任意）</div>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>投稿先</div>
+        <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+          <button onClick={() => setPostTarget("x")} style={igModeBtn(postTarget === "x")}>
+            X のみ
+          </button>
+          <button onClick={() => setPostTarget("ig")} style={igModeBtn(postTarget === "ig")}>
+            Instagram のみ
+          </button>
+          <button onClick={() => setPostTarget("both")} style={igModeBtn(postTarget === "both")}>
+            両方
+          </button>
+        </div>
+
+        <div style={{ fontSize: 13, fontWeight: 700, marginTop: 14 }}>投稿画像</div>
         <div style={{ fontSize: 12, color: C.sub, marginTop: 2, lineHeight: 1.6 }}>
-          既定はXのみ。IGにも出すなら、候補から選ぶかアップロードしてください。
+          X と Instagram で同じ画像を使います。既定はプレス画像。
+          {postTarget !== "x" && " Instagram は画像が必須です。"}
         </div>
 
         <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
@@ -1328,7 +1356,7 @@ function ReviewCard({
             }}
             style={igModeBtn(igMode === "none")}
           >
-            IGに出さない
+            画像なし
           </button>
           <button
             onClick={() => {
@@ -1381,9 +1409,14 @@ function ReviewCard({
           </div>
         )}
 
-        {igMode === "pick" && (
+        {igMode === "pick" && postTarget !== "x" && (
           <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8 }}>
-            選んだ画像をIG向けに整えて投稿します（横長は見切れることがあります）。
+            Instagram には選んだ画像を整えて投稿します（横長は見切れることがあります）。
+          </div>
+        )}
+        {igNeedsImage && (
+          <div style={{ fontSize: 12.5, color: C.danger, marginTop: 8 }}>
+            ⚠ Instagram に出すには画像が必要です
           </div>
         )}
 
@@ -1447,14 +1480,16 @@ function ReviewCard({
               text,
               undefined,
               undefined,
+              postTarget,
               igMode,
-              igMode === "upload" ? igData : undefined,
-              igMode === "pick" ? igPick : undefined
+              igMode === "pick" ? igPick : undefined,
+              igMode === "upload" ? igData : undefined
             )
           }
           disabled={
             busy ||
             over ||
+            igNeedsImage ||
             (igMode === "upload" && !igData) ||
             (igMode === "pick" && !igPick)
           }
@@ -1470,7 +1505,11 @@ function ReviewCard({
             cursor: over ? "not-allowed" : "pointer",
           }}
         >
-          承認してXへ投稿
+          {postTarget === "x"
+            ? "承認してXへ投稿"
+            : postTarget === "ig"
+              ? "承認してInstagramへ投稿"
+              : "承認してX・Instagramへ投稿"}
         </button>
         <button
           onClick={() => setRejecting((v) => !v)}

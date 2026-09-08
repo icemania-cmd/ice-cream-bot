@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAdmin } from "@/lib/auth";
 import { verifyFinalText } from "@/lib/verify";
-import { postTweet, uploadMedia } from "@/lib/x";
+import { postTweet, uploadMedia, uploadMediaBuffer } from "@/lib/x";
 import { postInstagram, optimizedImageUrl, storedImageUrl } from "@/lib/instagram";
 import {
   claimForPost,
@@ -164,34 +164,142 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    let mediaIds: string[] | undefined;
-    let imageNote = "画像なし";
-    if (item.imageUrl) {
-      const media = await uploadMedia(item.imageUrl);
-      if (media.mediaId) {
-        mediaIds = [media.mediaId];
-        imageNote = `画像あり(${media.via})`;
-      } else {
-        imageNote = `画像アップロード失敗: ${media.error}`;
-      }
+    // ---- 投稿先と画像 ----
+    //   target:    "x" | "ig" | "both"（既定 x）
+    //   imageMode: "none" | "pick" | "upload"
+    //     pick   … 候補（プレス画像・記事内画像）から選んだURL。改ざん防止のため候補内に限る
+    //     upload … 承認画面で差し替えた画像（dataURL）
+    // X と IG は同じ画像を使う。IG は画像必須。
+    // 旧クライアント（igMode / igPickUrl / igUploadData）からの要求も受ける。
+    const legacyIgMode: string =
+      typeof body.igMode === "string" ? body.igMode : "none";
+    const target: "x" | "ig" | "both" =
+      body.target === "ig" || body.target === "both" || body.target === "x"
+        ? body.target
+        : ["press", "pick", "upload"].includes(legacyIgMode)
+          ? "both"
+          : "x";
+    const wantX = target === "x" || target === "both";
+    const wantIg = target === "ig" || target === "both";
+
+    let imageMode: "none" | "pick" | "upload";
+    let pickUrl: string | undefined;
+    let uploadData: string | undefined;
+    if (body.imageMode === "none" || body.imageMode === "pick" || body.imageMode === "upload") {
+      imageMode = body.imageMode;
+      pickUrl = typeof body.imagePickUrl === "string" ? body.imagePickUrl : undefined;
+      uploadData = typeof body.imageUploadData === "string" ? body.imageUploadData : undefined;
+    } else if (legacyIgMode === "pick" || legacyIgMode === "upload") {
+      imageMode = legacyIgMode;
+      pickUrl = typeof body.igPickUrl === "string" ? body.igPickUrl : undefined;
+      uploadData = typeof body.igUploadData === "string" ? body.igUploadData : undefined;
+    } else {
+      // 指定が無ければ従来どおりプレス画像を使う
+      imageMode = item.imageUrl ? "pick" : "none";
+      pickUrl = item.imageUrl;
     }
 
-    const result = await postTweet(text, mediaIds);
-    if (!result.success) {
-      // 投稿された可能性が残る失敗では権利を返さない（再押下での二重投稿を防ぐ）
-      if (result.definitelyNotPosted) {
+    const candidates = [item.imageUrl, ...(item.images || [])].filter(
+      Boolean
+    ) as string[];
+
+    // 画像を、X 用（アップロード元）と IG 用（公開URL）の両方の形に解決する
+    let xImageSource: { url?: string; data?: { buffer: Buffer; contentType: string } } = {};
+    let igImageUrl: string | null = null;
+    let imageNote = "画像なし";
+
+    if (imageMode === "pick") {
+      if (!pickUrl || !candidates.includes(pickUrl)) {
         await releaseClaim(guid);
         return NextResponse.json(
-          { error: `X投稿に失敗しました: ${result.error}` },
+          { error: "選択された画像が候補に含まれていません" },
+          { status: 400 }
+        );
+      }
+      xImageSource = { url: pickUrl };
+      igImageUrl = optimizedImageUrl(pickUrl);
+    } else if (imageMode === "upload") {
+      const m = (uploadData || "").match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+      if (!m) {
+        await releaseClaim(guid);
+        return NextResponse.json(
+          { error: "アップロード画像が不正です" },
+          { status: 400 }
+        );
+      }
+      xImageSource = { data: { buffer: Buffer.from(m[2], "base64"), contentType: m[1] } };
+      await setIgUpload(guid, m[2]).catch(() => undefined);
+      igImageUrl = storedImageUrl(guid);
+    }
+
+    if (wantIg && !igImageUrl) {
+      await releaseClaim(guid);
+      return NextResponse.json(
+        { error: "Instagram には画像が必要です。画像を選ぶかアップロードしてください" },
+        { status: 400 }
+      );
+    }
+
+    // ---- X ----
+    let tweetId: string | undefined;
+    let xNote = "";
+    if (wantX) {
+      let mediaIds: string[] | undefined;
+      if (xImageSource.url || xImageSource.data) {
+        const media = xImageSource.data
+          ? await uploadMediaBuffer(xImageSource.data)
+          : await uploadMedia(xImageSource.url as string);
+        if (media.mediaId) {
+          mediaIds = [media.mediaId];
+          imageNote = `画像あり(${media.via})`;
+        } else {
+          imageNote = `画像アップロード失敗: ${media.error}`;
+        }
+      }
+
+      const result = await postTweet(text, mediaIds);
+      if (!result.success) {
+        // 投稿された可能性が残る失敗では権利を返さない（再押下での二重投稿を防ぐ）
+        if (result.definitelyNotPosted) {
+          await releaseClaim(guid);
+          return NextResponse.json(
+            { error: `X投稿に失敗しました: ${result.error}` },
+            { status: 502 }
+          );
+        }
+        return NextResponse.json(
+          {
+            error: `X投稿の結果が確認できませんでした（${result.error}）。Xのタイムラインを確認してください。投稿されていなければ数分後に再度お試しください。`,
+          },
           { status: 502 }
         );
       }
-      return NextResponse.json(
-        {
-          error: `X投稿の結果が確認できませんでした（${result.error}）。Xのタイムラインを確認してください。投稿されていなければ数分後に再度お試しください。`,
-        },
-        { status: 502 }
-      );
+      tweetId = result.tweetId;
+      xNote = "Xに投稿";
+    }
+
+    // ---- Instagram ----
+    // 両方のときは X の失敗で止まり、IG の失敗では X を巻き戻さない。
+    // IG だけのときは IG の失敗がそのまま失敗。
+    let igNote = "IGなし";
+    let igStatus: string | undefined;
+    if (wantIg && igImageUrl) {
+      const ig = await postInstagram(igImageUrl, text);
+      if (ig.success) {
+        igNote = "IGに投稿";
+        igStatus = "posted";
+      } else if (ig.skipped) {
+        igNote = `IGスキップ(${ig.reason})`;
+        igStatus = "skipped";
+      } else {
+        igNote = `IG投稿失敗(${ig.error})`;
+        igStatus = "failed";
+        console.error("[IG] approve post failed:", ig.error);
+      }
+      if (!wantX && igStatus !== "posted") {
+        await releaseClaim(guid);
+        return NextResponse.json({ error: igNote }, { status: 502 });
+      }
     }
 
     // 承認前に文面を書き換えていたら、その差分を残す。
@@ -225,63 +333,24 @@ export async function POST(request: NextRequest) {
 
     await rememberPostedProduct(item.productName);
 
-    // IGは「人が承認画面で選んだとき」だけ投稿する（既定は出さない）。
-    //   igMode: "press"   … プレス画像(item.imageUrl)をそのままIGにも使う
-    //           "upload"  … 差し替え画像。igUploadData(dataURL)を保存して使う
-    //           それ以外   … IGには出さない
-    // IGの失敗はX投稿を巻き戻さない。結果は投稿済み記録にも残す。
-    const igMode: string = typeof body.igMode === "string" ? body.igMode : "none";
-    let igNote = "";
-    let igStatus: string | undefined;
-    let igImageUrl: string | null = null;
-
-    if (igMode === "pick" && typeof body.igPickUrl === "string") {
-      // 承認画面で選ばれた候補画像。改ざん防止のため、その記事の候補内のURLに限る。
-      const candidates = [item.imageUrl, ...(item.images || [])].filter(
-        Boolean
-      ) as string[];
-      if (candidates.includes(body.igPickUrl)) {
-        igImageUrl = optimizedImageUrl(body.igPickUrl);
-      }
-      if (!igImageUrl) igNote = "IGスキップ(選択画像が不正)";
-    } else if (igMode === "press") {
-      igImageUrl = item.imageUrl ? optimizedImageUrl(item.imageUrl) : null;
-      if (!igImageUrl) igNote = "IGスキップ(プレス画像なし)";
-    } else if (igMode === "upload" && typeof body.igUploadData === "string") {
-      const m = body.igUploadData.match(/^data:image\/[a-zA-Z+]+;base64,(.+)$/);
-      if (m) {
-        await setIgUpload(guid, m[1]).catch(() => undefined);
-        igImageUrl = storedImageUrl(guid);
-      }
-      if (!igImageUrl) igNote = "IGスキップ(アップロード画像が不正)";
-    }
-
-    if (igImageUrl) {
-      const ig = await postInstagram(igImageUrl, text);
-      if (ig.success) { igNote = "IGにも投稿"; igStatus = "posted"; }
-      else if (ig.skipped) { igNote = `IGスキップ(${ig.reason})`; igStatus = "skipped"; }
-      else { igNote = `IG投稿失敗(${ig.error})`; igStatus = "failed"; console.error("[IG] approve post failed:", ig.error); }
-    } else if (!igNote) {
-      igNote = "IGなし";
-    }
-
     await markPosted(guid, {
       title: item.title,
       link: item.link,
       text,
-      tweetId: result.tweetId,
-      imageUrl: item.imageUrl,
+      tweetId,
+      imageUrl: pickUrl || item.imageUrl,
       releaseDate: item.releaseDate,
       route: "approved",
       ig: igStatus,
     });
-    await recordPost();
+    // 1日の投稿数は X の枠なので、X に出したときだけ数える
+    if (wantX) await recordPost();
     await dequeue(queue, guid);
 
     return NextResponse.json({
       ok: true,
-      action: "投稿しました",
-      tweetId: result.tweetId,
+      action: [xNote, igNote].filter((n) => n && n !== "IGなし").join(" / ") || "投稿しました",
+      tweetId,
       imageNote,
       igNote,
     });

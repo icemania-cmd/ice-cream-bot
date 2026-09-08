@@ -185,6 +185,8 @@ export interface QueuedItem {
   topicType?: string;
   /** 本文中の商品画像候補（IGの画像選択用） */
   images?: string[];
+  /** 同じ記事から分割した他の商品名。投稿直前の照合で値の帰属を見るのに使う */
+  siblings?: string[];
 }
 
 /**

@@ -87,8 +87,9 @@ export async function GET(request: NextRequest) {
   const sourceText = `${release.title}\n${release.corp}\n${detail.bodyText}`;
   // 複数商品なら商品ごとに照合する（scan と同じ扱い）
   const perProduct = splitProducts(extraction);
-  const 商品ごと = perProduct.map((ex) => {
-    const check = verifyPost({ extraction: ex, sourceText, today: jstDateString() });
+  const 商品ごと = perProduct.map((ex, i) => {
+    const siblings = perProduct.filter((_, j) => j !== i).map((o) => o.product_name);
+    const check = verifyPost({ extraction: ex, sourceText, today: jstDateString(), otherProducts: siblings });
     return {
       判定: check.autoPostable ? "自動投稿の対象" : "承認待ちに回る",
       投稿文: check.text,

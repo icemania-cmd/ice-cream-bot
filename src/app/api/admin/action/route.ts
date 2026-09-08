@@ -107,6 +107,8 @@ export async function POST(request: NextRequest) {
       text,
       sourceText: item.sourceExcerpt || "",
       today: jstDateString(),
+      productName: item.productName || undefined,
+      siblings: item.siblings,
     });
 
     if (finalCheck.blocking.length > 0) {

@@ -225,10 +225,15 @@ export async function POST(request: NextRequest) {
       const ptitle = split
         ? `${release.title}（${pi + 1}/${perProduct.length}: ${ex.product_name}）`
         : release.title;
+      const siblings = perProduct
+        .filter((_, j) => j !== pi)
+        .map((o) => o.product_name)
+        .filter(Boolean);
       const check = verifyPost({
         extraction: ex,
         sourceText,
         today: jstDateString(),
+        otherProducts: siblings,
       });
 
       const twin = await findSimilarPostedProduct(ex.product_name);
@@ -274,6 +279,7 @@ export async function POST(request: NextRequest) {
         sourceExcerpt: sourceText.slice(0, 4000),
         createdAt: new Date().toISOString(),
         topicType: ex.topic_type,
+        siblings,
       };
       await enqueue(queue, item);
       results.push({

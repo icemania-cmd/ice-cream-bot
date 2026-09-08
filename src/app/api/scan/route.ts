@@ -425,7 +425,11 @@ export async function GET(request: NextRequest) {
           const ptitle = split
             ? `${release.title}（${pi + 1}/${perProduct.length}: ${ex.product_name}）`
             : release.title;
-          const check = verifyPost({ extraction: ex, sourceText, today });
+          const siblings = perProduct
+            .filter((_, j) => j !== pi)
+            .map((o) => o.product_name)
+            .filter(Boolean);
+          const check = verifyPost({ extraction: ex, sourceText, today, otherProducts: siblings });
 
           // 同じ商品を別の記事で二重投稿しないか確認する。
           // コラボ商品は両社がリリースを出すため、記事ID単位の重複防止では防げない。
@@ -473,6 +477,7 @@ export async function GET(request: NextRequest) {
             sourceExcerpt: sourceText.slice(0, 4000),
             createdAt: new Date().toISOString(),
             topicType: ex.topic_type,
+            siblings,
           };
 
           if (dryRun) {

@@ -146,33 +146,49 @@ interface Occurrence<T> {
 function attributedValues<T>(
   src: string,
   productName: string,
-  occurrences: Occurrence<T>[]
+  occurrences: Occurrence<T>[],
+  /**
+   * 同じ記事に載っている他の商品名（正規化済み）。
+   * 2商品のリリースでは、商品名の直後にある値が「次の商品の値」であることが
+   * ある（タイトルで両方の名前が並び、その後に1つ目の商品の仕様が来る）。
+   * 商品名と値の間に他の商品名が挟まっていたら、その値はこの商品のものではない。
+   */
+  blockers: string[] = []
 ): Set<T> | null {
   const anchors = indicesOf(src, productName);
   if (anchors.length === 0 || occurrences.length === 0) return null;
+  const blockIdx = blockers
+    .filter((b) => b && b !== productName)
+    .flatMap((b) => indicesOf(src, b));
+  const blockedBetween = (from: number, to: number) =>
+    blockIdx.some((b) => b > from && b < to);
 
   const chosen = new Set<T>();
   for (const a of anchors) {
     const after = occurrences.find((o) => o.index >= a);
     if (after) {
-      chosen.add(after.value);
+      if (!blockedBetween(a + productName.length, after.index)) {
+        chosen.add(after.value);
+      }
       continue;
     }
     // 商品名より後ろに無ければ、直前のものを採る
     const before = [...occurrences].reverse().find((o) => o.index < a);
-    if (before) chosen.add(before.value);
+    if (before && !blockedBetween(before.index, a)) chosen.add(before.value);
   }
   return chosen.size > 0 ? chosen : null;
 }
 
 // ---- 価格 ----
 
-const PRICE_RE = /[\d,]+円/g;
+// 「321.84円」のような小数の税込額も1つの金額として読む。
+// [\d,]+円 だと "84円" だけを拾ってしまい、原文との突き合わせが壊れる。
+const PRICE_RE = /\d[\d,]*(?:\.\d+)?円/g;
 
 function priceOccurrences(text: string): Occurrence<number>[] {
   const out: Occurrence<number>[] = [];
   for (const m of text.matchAll(PRICE_RE)) {
-    const value = parseInt(m[0].replace(/[,円]/g, ""), 10);
+    const value = parseFloat(m[0].replace(/[,円]/g, ""));
     if (Number.isFinite(value)) {
       out.push({ index: m.index ?? 0, raw: m[0], value });
     }
@@ -238,6 +254,40 @@ const TAX_TERMS = ["税込", "税抜", "税別"] as const;
  * 「280円（税込308円）」のように前に来る形もあるため両方向を見る。
  * 後ろを優先し、無ければ直前を見る。
  */
+type TaxKind = "税込" | "税抜";
+
+/**
+ * ある金額に付いている税表記を決める。
+ *
+ * 「298円（税込321.84円）」の形では、括弧の中の税込は 321.84 のもので、
+ * 298 は税抜。taxNear のように「近くに税込がある」だけで判断すると、
+ * 298 を税込と取り違える。コンビニのリリースはこの形が標準なので、
+ * ここを間違えると価格の税表記がほぼ毎回ずれる。
+ *
+ *   A円（税込B円）   → A は税抜、B は税込
+ *   A円（税抜B円）   → A は税込、B は税抜
+ *   A円（税込）      → A は税込
+ *   税込A円 / 税抜A円 → 直前の表記がそのまま A のもの
+ */
+function taxOf(text: string, occ: Occurrence<number>): TaxKind | null {
+  const after = text.slice(occ.index + occ.raw.length, occ.index + occ.raw.length + 20);
+  const before = text.slice(Math.max(0, occ.index - 6), occ.index);
+
+  // 直前に「税込」「税抜」が付いている（括弧の内側の金額）
+  if (/(税込|税込み)\s*$/.test(before)) return "税込";
+  if (/(税抜|税抜き|税別)\s*$/.test(before)) return "税抜";
+
+  // 直後に括弧で「（税込B円）」と別の金額が続く → この金額はその逆
+  const inner = after.match(/^\s*[（(]\s*(税込|税込み|税抜|税抜き|税別)\s*[\d,]+(?:\.\d+)?円/);
+  if (inner) return /税込/.test(inner[1]) ? "税抜" : "税込";
+
+  // 直後に「（税込）」だけ → この金額のもの
+  const own = after.match(/^\s*[（(]?\s*(税込|税込み|税抜|税抜き|税別)/);
+  if (own) return /税込/.test(own[1]) ? "税込" : "税抜";
+
+  return null;
+}
+
 function taxNear(text: string, priceRaw: string): string | null {
   const positions = indicesOf(text, priceRaw);
   for (const idx of positions) {
@@ -339,8 +389,13 @@ export function verifyPost(params: {
   sourceText: string;
   /** JST の今日（YYYY-MM-DD） */
   today: string;
+  /** 同じ記事に載っている他の商品名。値の帰属を間違えないために使う */
+  otherProducts?: string[];
 }): VerifyResult {
   const { extraction: ex, sourceText, today } = params;
+  const blockers = (params.otherProducts || []).map((n) =>
+    normalize(coreProductName(n))
+  );
   const blocking: string[] = [];
   const warnings: string[] = [];
   const src = normalize(sourceText);
@@ -395,12 +450,12 @@ export function verifyPost(params: {
   const srcPrices = priceOccurrences(src);
   const srcDates = dateOccurrences(src);
   const priceGroups = groupPrices(srcPrices);
-  const attributedGroup = attributedValues(src, product, priceGroups);
+  const attributedGroup = attributedValues(src, product, priceGroups, blockers);
   // 商品名の直後にある価格表記に含まれる金額（税抜・税込の両方）
   const productPrices = attributedGroup
     ? new Set<number>(Array.from(attributedGroup).flat())
     : null;
-  const productDates = attributedValues(src, product, srcDates);
+  const productDates = attributedValues(src, product, srcDates, blockers);
 
   // 3. 発売日
   //
@@ -433,7 +488,12 @@ export function verifyPost(params: {
     warnings.push("発売日を特定できていません");
   } else {
     const attributed = productDates?.has(canonRelease ?? "") ?? false;
-    if (!attributed && !evidenceBackedDate) {
+    // 商品名の直後に別の日付が付いているなら、それがこの商品の発売日。
+    // 前後300字の証拠窓は「発売日が商品名より前に書かれた記事」の救済用で、
+    // 2商品のリリースでは隣の商品の日付まで拾ってしまう。位置の帰属を優先する。
+    const positionallyContradicted =
+      productDates !== null && productDates.size > 0 && !attributed;
+    if (!attributed && (!evidenceBackedDate || positionallyContradicted)) {
       if (!srcDates.some((o) => o.value === canonRelease)) {
         warnings.push(
           `発売日 ${ex.release_date} が原文に見当たりません（AIの推定の可能性）`
@@ -488,21 +548,23 @@ export function verifyPost(params: {
       continue;
     }
     // 6. 税込／税抜の取り違え。同じ金額に原文で別の税表記が付いていないか。
-    const postTax = taxNear(ntext, o.raw);
+    //    「298円（税込321.84円）」の 298 を税込と書く誤りをここで止める。
+    const postTax = taxOf(ntext, o);
     if (postTax) {
-      const srcTax = taxNear(src, o.raw) || taxNear(src, `${o.value}円`);
-      if (srcTax && srcTax !== postTax) {
+      const srcSame = srcPrices.filter((sp) => sp.value === o.value);
+      const srcTaxes = new Set(
+        srcSame.map((sp) => taxOf(src, sp)).filter((t): t is TaxKind => t !== null)
+      );
+      if (srcTaxes.size > 0 && !srcTaxes.has(postTax)) {
         warnings.push(
-          `税表記が原文と異なります（投稿:${postTax} / 原文:${srcTax}）`
+          `税表記が原文と異なります（投稿: ${o.raw}は${postTax} / 原文: ${Array.from(srcTaxes).join("・")}）`
         );
-      } else if (!srcTax) {
-        warnings.push(`「${postTax}」という表記が原文の価格に付いていません`);
       }
     }
   }
 
   // 7. 販売エリア
-  const productRegions = attributedValues(src, product, regionOccurrences(src));
+  const productRegions = attributedValues(src, product, regionOccurrences(src), blockers);
   for (const r of regionOccurrences(ntext)) {
     if (productRegions && !productRegions.has(r.value)) {
       warnings.push(
@@ -602,8 +664,18 @@ export function verifyFinalText(params: {
   sourceText: string;
   /** JST の今日（YYYY-MM-DD） */
   today: string;
+  /** この投稿の商品名。あれば「この商品の値か」まで見る */
+  productName?: string;
+  /** 同じ記事に載っている他の商品名（分割した項目で持ち回る） */
+  siblings?: string[];
 }): FinalCheck {
   const { text, sourceText, today } = params;
+  const product = params.productName
+    ? normalize(coreProductName(params.productName))
+    : "";
+  const blockers = (params.siblings || []).map((n) =>
+    normalize(coreProductName(n))
+  );
   const blocking: string[] = [];
   const unverified: string[] = [];
   const src = normalize(sourceText);
@@ -632,20 +704,61 @@ export function verifyFinalText(params: {
     return { blocking, unverified, weight };
   }
 
-  // ---- 金額: 投稿文の金額はすべて原文にあること ----
-  const srcPrices = new Set(priceOccurrences(src).map((o) => o.value));
+  // ---- 金額: 投稿文の金額はすべて原文にあること。税表記も原文と同じこと ----
+  const srcPriceList = priceOccurrences(src);
+  const srcPrices = new Set(srcPriceList.map((o) => o.value));
+  // この商品に帰属する値（商品名の直後の値。他の商品名を挟んだら無効）。
+  // 2商品のリリースで「隣の商品の価格・日付」が紛れるのを、ここで止める。
+  const ownPrices = product
+    ? attributedValues(src, product, groupPrices(srcPriceList), blockers)
+    : null;
+  const ownPriceValues = ownPrices
+    ? new Set(Array.from(ownPrices).flat())
+    : null;
   for (const p of priceOccurrences(ntext)) {
     if (!srcPrices.has(p.value)) {
-      unverified.push(`価格「${p.value}円」は原文に出てきません`);
+      unverified.push(`価格「${p.raw}」は原文に出てきません`);
+      continue;
+    }
+    if (ownPriceValues && !ownPriceValues.has(p.value)) {
+      unverified.push(
+        `価格「${p.raw}」は別の商品の価格の可能性があります（この商品の価格: ${Array.from(ownPriceValues).map((v) => v + "円").join("/")}）`
+      );
+      continue;
+    }
+    // 金額は合っていても、税込／税抜が違えば誤情報。
+    // 「298円（税込321.84円）」の 298 を「298円（税込）」と書くのがその典型。
+    const postTax = taxOf(ntext, p);
+    if (!postTax) continue;
+    const srcTaxes = new Set(
+      srcPriceList
+        .filter((sp) => sp.value === p.value)
+        .map((sp) => taxOf(src, sp))
+        .filter((t): t is TaxKind => t !== null)
+    );
+    if (srcTaxes.size > 0 && !srcTaxes.has(postTax)) {
+      unverified.push(
+        `「${p.raw}」の税表記が原文と違います（投稿: ${postTax} / 原文: ${Array.from(srcTaxes).join("・")}）`
+      );
     }
   }
 
-  // ---- 日付: 投稿文の日付はすべて原文にあること ----
-  const srcDateList = dateOccurrences(src).map((o) => o.value);
+  // ---- 日付: 投稿文の日付はすべて原文にあること。この商品の日付であること ----
+  const srcDateOcc = dateOccurrences(src);
+  const srcDateList = srcDateOcc.map((o) => o.value);
   const srcDates = new Set(srcDateList);
+  const ownDates = product
+    ? attributedValues(src, product, srcDateOcc, blockers)
+    : null;
   for (const d of dateOccurrences(ntext)) {
     if (!srcDates.has(d.value)) {
       unverified.push(`日付「${d.value}」は原文に出てきません`);
+      continue;
+    }
+    if (ownDates && !ownDates.has(d.value)) {
+      unverified.push(
+        `日付「${d.value}」は別の商品の日付の可能性があります（この商品の日付: ${Array.from(ownDates).join("/")}）`
+      );
     }
   }
 

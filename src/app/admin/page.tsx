@@ -137,6 +137,37 @@ export default function AdminPage() {
   );
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  /**
+   * 画面の下に固定で出す進行・結果の表示。
+   * 画面上部の message はスマホでボタン付近を見ているときに視界に入らない。
+   * 「押したあと何が起きているのか」を、どこを見ていても分かる位置に出す。
+   */
+  const [toast, setToast] = useState<{
+    kind: "progress" | "ok" | "error";
+    text: string;
+    link?: string;
+    since?: number;
+  } | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  /** いま処理中のカード。ボタンの文言を「投稿中…」に変えるために持つ */
+  const [busyGuid, setBusyGuid] = useState<string | null>(null);
+
+  // 進行中は経過秒数を刻む。進んでいることが見えるだけで不安はかなり減る
+  useEffect(() => {
+    if (!toast || toast.kind !== "progress" || !toast.since) return;
+    const since = toast.since;
+    const id = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - since) / 1000));
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [toast]);
+
+  // 成功の表示は自然に消す。失敗は消さない（見落とさせない）
+  useEffect(() => {
+    if (!toast || toast.kind !== "ok") return;
+    const id = window.setTimeout(() => setToast(null), 8000);
+    return () => window.clearTimeout(id);
+  }, [toast]);
   const [pushState, setPushState] = useState<PushState>("checking");
   const [pushDevices, setPushDevices] = useState(0);
   const [manualUrl, setManualUrl] = useState("");
@@ -447,8 +478,17 @@ export default function AdminPage() {
       if (!confirm(`このまま${dest}へ投稿します:\n\n${text}`)) return;
     }
 
+    const dest =
+      target === "ig" ? "Instagram" : target === "both" ? "XとInstagram" : "X";
     setLoading(true);
+    setBusyGuid(item.guid);
     setMessage("");
+    setElapsed(0);
+    setToast(
+      action === "approve"
+        ? { kind: "progress", text: `${dest}へ投稿しています…`, since: Date.now() }
+        : { kind: "progress", text: "却下しています…", since: Date.now() }
+    );
     try {
       const res = await fetch("/api/admin/action", {
         method: "POST",
@@ -477,10 +517,11 @@ export default function AdminPage() {
       // 誤情報が世に出ると、直すのに何倍も手間がかかる。
       if (res.status === 409 && json.needsFactConfirm) {
         setLoading(false);
+        setToast(null);
         if (confirm(json.error)) {
           await act(item, queue, action, text, reason, memo, target, imageMode, imagePickUrl, imageUploadData, confirmDuplicate, true);
         } else {
-          setMessage("投稿を取りやめました。原文を確認してから文面を直してください");
+          setToast({ kind: "error", text: "投稿を取りやめました。原文を確認してから文面を直してください" });
         }
         return;
       }
@@ -488,27 +529,42 @@ export default function AdminPage() {
       // 同じ商品を投稿済みの可能性。押した操作を握り潰さず、確認したうえで通す
       if (res.status === 409 && json.needsConfirm) {
         setLoading(false);
+        setToast(null);
         if (confirm(json.error)) {
           await act(item, queue, action, text, reason, memo, target, imageMode, imagePickUrl, imageUploadData, true, confirmUnverified);
         } else {
-          setMessage("投稿を取りやめました");
+          setToast({ kind: "error", text: "投稿を取りやめました" });
         }
         return;
       }
 
       if (!res.ok) {
+        // 失敗の表示は自動で消さない。「押しても何も起きない」に見えるのが一番まずい
+        setToast({ kind: "error", text: json.error || "失敗しました" });
         setMessage(`❌ ${json.error}`);
-        // 画面上部のメッセージは、スマホでボタン付近を見ているときに見えない。
-        // 「押しても何も起きない」と誤解させるのが一番まずいので確実に出す。
-        if (action === "approve") window.alert(json.error);
+      } else if (action === "approve") {
+        const detail = [json.imageNote, json.igNote]
+          .filter((n) => n && n !== "IGなし" && n !== "画像なし")
+          .join(" / ");
+        setToast({
+          kind: "ok",
+          text: `${json.action || "投稿しました"}${detail ? `（${detail}）` : ""}`,
+          // 投稿そのものを開けるリンク。「本当に出たか」はこれで確かめられる
+          link: json.tweetId ? `https://x.com/i/status/${json.tweetId}` : undefined,
+        });
+        setMessage(`✅ ${json.action}`);
       } else {
-        setMessage(`✅ ${json.action} ${json.imageNote || ""}${json.igNote ? " / " + json.igNote : ""}`);
+        setToast({ kind: "ok", text: json.action || "却下しました" });
+        setMessage(`✅ ${json.action}`);
       }
       await load(secret);
     } catch (e) {
-      setMessage(`❌ ${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      setToast({ kind: "error", text: `通信に失敗しました: ${msg}。投稿されたかはXを確認してください` });
+      setMessage(`❌ ${msg}`);
     } finally {
       setLoading(false);
+      setBusyGuid(null);
     }
   }
 
@@ -701,7 +757,86 @@ export default function AdminPage() {
   ];
 
   return (
-    <main style={{ maxWidth: 860, margin: "0 auto", padding: "32px 16px 80px" }}>
+    <main style={{ maxWidth: 860, margin: "0 auto", padding: "32px 16px 120px" }}>
+      {toast && (
+        <div
+          role="status"
+          onClick={() => toast.kind !== "progress" && setToast(null)}
+          style={{
+            position: "fixed",
+            left: 12,
+            right: 12,
+            bottom: "max(12px, env(safe-area-inset-bottom))",
+            zIndex: 1000,
+            padding: "14px 16px",
+            borderRadius: 12,
+            background:
+              toast.kind === "ok" ? "#173d2a" : toast.kind === "error" ? "#4a1d1d" : "#1e2633",
+            border: `1px solid ${
+              toast.kind === "ok" ? C.ok : toast.kind === "error" ? C.danger : C.accent
+            }`,
+            color: "#e8eaed",
+            fontSize: 15,
+            lineHeight: 1.5,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+            cursor: toast.kind === "progress" ? "default" : "pointer",
+          }}
+        >
+          {toast.kind === "progress" && (
+            <div
+              style={{
+                height: 3,
+                borderRadius: 2,
+                background: "#2b3442",
+                overflow: "hidden",
+                marginBottom: 10,
+              }}
+            >
+              <div
+                style={{
+                  height: "100%",
+                  width: "40%",
+                  background: C.accent,
+                  borderRadius: 2,
+                  animation: "ice-slide 1.1s ease-in-out infinite",
+                }}
+              />
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 18 }}>
+              {toast.kind === "ok" ? "✅" : toast.kind === "error" ? "❌" : "⏳"}
+            </span>
+            <span style={{ flex: 1 }}>
+              {toast.text}
+              {toast.kind === "progress" && elapsed > 0 && (
+                <span style={{ color: C.sub, marginLeft: 8 }}>{elapsed}秒</span>
+              )}
+            </span>
+            {toast.kind !== "progress" && (
+              <span style={{ color: C.sub, fontSize: 13 }}>✕</span>
+            )}
+          </div>
+          {toast.link && (
+            <a
+              href={toast.link}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                display: "inline-block",
+                marginTop: 8,
+                color: C.ok,
+                fontWeight: 700,
+                textDecoration: "underline",
+              }}
+            >
+              投稿を開いて確認する →
+            </a>
+          )}
+          <style>{`@keyframes ice-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }`}</style>
+        </div>
+      )}
       <div
         style={{
           display: "flex",
@@ -981,6 +1116,7 @@ export default function AdminPage() {
               onAct={act}
               onSplit={splitItem}
               busy={loading}
+              posting={busyGuid === item.guid}
             />
           ))
         ) : (
@@ -997,6 +1133,7 @@ export default function AdminPage() {
               onAct={act}
               onSplit={splitItem}
               busy={loading}
+              posting={busyGuid === item.guid}
             />
           ))
         ) : (
@@ -1222,6 +1359,7 @@ function ReviewCard({
   onAct,
   onSplit,
   busy,
+  posting,
 }: {
   item: QueuedItem;
   queue: "review" | "ready";
@@ -1239,6 +1377,8 @@ function ReviewCard({
   ) => void;
   onSplit: (item: QueuedItem, queue: "review" | "ready") => void;
   busy: boolean;
+  /** このカードがいま投稿処理中か。ボタンの文言を変える */
+  posting: boolean;
 }) {
   const [text, setText] = useState(stripUrls(item.text));
   const [showSource, setShowSource] = useState(false);
@@ -1559,11 +1699,13 @@ function ReviewCard({
             cursor: over ? "not-allowed" : "pointer",
           }}
         >
-          {postTarget === "x"
-            ? "承認してXへ投稿"
-            : postTarget === "ig"
-              ? "承認してInstagramへ投稿"
-              : "承認してX・Instagramへ投稿"}
+          {posting
+            ? "投稿しています…"
+            : postTarget === "x"
+              ? "承認してXへ投稿"
+              : postTarget === "ig"
+                ? "承認してInstagramへ投稿"
+                : "承認してX・Instagramへ投稿"}
         </button>
         <button
           onClick={() => setRejecting((v) => !v)}

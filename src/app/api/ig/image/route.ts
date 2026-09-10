@@ -98,7 +98,7 @@ async function optimize(input: Buffer): Promise<Buffer> {
     jpeg(
       sharp(input, { failOn: "none" })
         .rotate()
-        .resize(tw, th, { fit: "cover", position: "attention" })
+        .resize(tw, th, { fit: "cover", position: "centre" })
     );
 
   if (MODE === "square") {

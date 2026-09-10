@@ -167,11 +167,10 @@ export async function POST(request: NextRequest) {
     }
 
     // ---- 投稿先と画像 ----
-    //   target:    "x" | "ig" | "both"（既定 x）
-    //   imageMode: "none" | "pick" | "upload"
-    //     pick   … 候補（プレス画像・記事内画像）から選んだURL。改ざん防止のため候補内に限る
-    //     upload … 承認画面で差し替えた画像（dataURL）
-    // X と IG は同じ画像を使う。IG は画像必須。
+    //   target:       "x" | "ig" | "both"（既定 x）
+    //   imageMode:    IG 用画像 "none" | "pick" | "upload"
+    //   xImageMode:   X 用画像 "none" | "pick" | "upload"（未指定なら imageMode にフォールバック）
+    // X と IG で別々の画像を選べる。IG は画像必須。
     // 旧クライアント（igMode / igPickUrl / igUploadData）からの要求も受ける。
     const legacyIgMode: string =
       typeof body.igMode === "string" ? body.igMode : "none";
@@ -184,54 +183,96 @@ export async function POST(request: NextRequest) {
     const wantX = target === "x" || target === "both";
     const wantIg = target === "ig" || target === "both";
 
-    let imageMode: "none" | "pick" | "upload";
-    let pickUrl: string | undefined;
-    let uploadData: string | undefined;
-    if (body.imageMode === "none" || body.imageMode === "pick" || body.imageMode === "upload") {
-      imageMode = body.imageMode;
-      pickUrl = typeof body.imagePickUrl === "string" ? body.imagePickUrl : undefined;
-      uploadData = typeof body.imageUploadData === "string" ? body.imageUploadData : undefined;
-    } else if (legacyIgMode === "pick" || legacyIgMode === "upload") {
-      imageMode = legacyIgMode;
-      pickUrl = typeof body.igPickUrl === "string" ? body.igPickUrl : undefined;
-      uploadData = typeof body.igUploadData === "string" ? body.igUploadData : undefined;
-    } else {
-      // 指定が無ければ従来どおりプレス画像を使う
-      imageMode = item.imageUrl ? "pick" : "none";
-      pickUrl = item.imageUrl;
-    }
-
     const candidates = [item.imageUrl, ...(item.images || [])].filter(
       Boolean
     ) as string[];
 
-    // 画像を、X 用（アップロード元）と IG 用（公開URL）の両方の形に解決する
-    let xImageSource: { url?: string; data?: { buffer: Buffer; contentType: string } } = {};
-    let igImageUrl: string | null = null;
-    let imageNote = "画像なし";
+    // ---- X 用画像の解決 ----
+    let xImageMode: "none" | "pick" | "upload" = "none";
+    let xPickUrl: string | undefined;
+    let xUploadData: string | undefined;
+    if (body.xImageMode === "none" || body.xImageMode === "pick" || body.xImageMode === "upload") {
+      xImageMode = body.xImageMode;
+      xPickUrl = typeof body.xImagePickUrl === "string" ? body.xImagePickUrl : undefined;
+      xUploadData = typeof body.xImageUploadData === "string" ? body.xImageUploadData : undefined;
+    } else if (body.imageMode === "none" || body.imageMode === "pick" || body.imageMode === "upload") {
+      // xImageMode が無ければ従来の共通 imageMode にフォールバック（旧クライアント互換）
+      xImageMode = body.imageMode;
+      xPickUrl = typeof body.imagePickUrl === "string" ? body.imagePickUrl : undefined;
+      xUploadData = typeof body.imageUploadData === "string" ? body.imageUploadData : undefined;
+    } else {
+      xImageMode = item.imageUrl ? "pick" : "none";
+      xPickUrl = item.imageUrl;
+    }
 
-    if (imageMode === "pick") {
-      if (!pickUrl || !candidates.includes(pickUrl)) {
+    let xImageSource: { url?: string; data?: { buffer: Buffer; contentType: string } } = {};
+    let xImageNote = "画像なし";
+
+    if (xImageMode === "pick") {
+      if (!xPickUrl || !candidates.includes(xPickUrl)) {
         await releaseClaim(guid);
         return NextResponse.json(
-          { error: "選択された画像が候補に含まれていません" },
+          { error: "X: 選択された画像が候補に含まれていません" },
           { status: 400 }
         );
       }
-      xImageSource = { url: pickUrl };
-      igImageUrl = optimizedImageUrl(pickUrl);
-    } else if (imageMode === "upload") {
-      const m = (uploadData || "").match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+      xImageSource = { url: xPickUrl };
+      xImageNote = "画像あり(pick)";
+    } else if (xImageMode === "upload") {
+      const m = (xUploadData || "").match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
       if (!m) {
         await releaseClaim(guid);
         return NextResponse.json(
-          { error: "アップロード画像が不正です" },
+          { error: "X: アップロード画像が不正です" },
           { status: 400 }
         );
       }
       xImageSource = { data: { buffer: Buffer.from(m[2], "base64"), contentType: m[1] } };
+      xImageNote = "画像あり(upload)";
+    }
+
+    // ---- IG 用画像の解決 ----
+    let igImageMode: "none" | "pick" | "upload" = "none";
+    let igPickUrl: string | undefined;
+    let igUploadData: string | undefined;
+    if (body.imageMode === "none" || body.imageMode === "pick" || body.imageMode === "upload") {
+      igImageMode = body.imageMode;
+      igPickUrl = typeof body.imagePickUrl === "string" ? body.imagePickUrl : undefined;
+      igUploadData = typeof body.imageUploadData === "string" ? body.imageUploadData : undefined;
+    } else if (legacyIgMode === "pick" || legacyIgMode === "upload") {
+      igImageMode = legacyIgMode;
+      igPickUrl = typeof body.igPickUrl === "string" ? body.igPickUrl : undefined;
+      igUploadData = typeof body.igUploadData === "string" ? body.igUploadData : undefined;
+    } else {
+      igImageMode = item.imageUrl ? "pick" : "none";
+      igPickUrl = item.imageUrl;
+    }
+
+    let igImageUrl: string | null = null;
+    let imageNote = "画像なし";
+
+    if (igImageMode === "pick") {
+      if (!igPickUrl || !candidates.includes(igPickUrl)) {
+        await releaseClaim(guid);
+        return NextResponse.json(
+          { error: "IG: 選択された画像が候補に含まれていません" },
+          { status: 400 }
+        );
+      }
+      igImageUrl = optimizedImageUrl(igPickUrl);
+      imageNote = "画像あり(pick)";
+    } else if (igImageMode === "upload") {
+      const m = (igUploadData || "").match(/^data:(image\/[a-zA-Z+]+);base64,(.+)$/);
+      if (!m) {
+        await releaseClaim(guid);
+        return NextResponse.json(
+          { error: "IG: アップロード画像が不正です" },
+          { status: 400 }
+        );
+      }
       await setIgUpload(guid, m[2]).catch(() => undefined);
       igImageUrl = storedImageUrl(guid);
+      imageNote = "画像あり(upload)";
     }
 
     if (wantIg && !igImageUrl) {
@@ -253,9 +294,9 @@ export async function POST(request: NextRequest) {
           : await uploadMedia(xImageSource.url as string);
         if (media.mediaId) {
           mediaIds = [media.mediaId];
-          imageNote = `画像あり(${media.via})`;
+          xImageNote = `画像あり(${media.via})`;
         } else {
-          imageNote = `画像アップロード失敗: ${media.error}`;
+          xImageNote = `画像アップロード失敗: ${media.error}`;
         }
       }
 
@@ -340,7 +381,7 @@ export async function POST(request: NextRequest) {
       link: item.link,
       text,
       tweetId,
-      imageUrl: pickUrl || item.imageUrl,
+      imageUrl: xPickUrl || igPickUrl || item.imageUrl,
       releaseDate: item.releaseDate,
       route: "approved",
       ig: igStatus,

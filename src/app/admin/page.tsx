@@ -468,6 +468,9 @@ export default function AdminPage() {
     imageMode?: string,
     imagePickUrl?: string,
     imageUploadData?: string,
+    xImageMode?: string,
+    xImagePickUrl?: string,
+    xImageUploadData?: string,
     confirmDuplicate = false,
     confirmUnverified = false
   ) {
@@ -507,6 +510,9 @@ export default function AdminPage() {
           imageMode,
           imagePickUrl,
           imageUploadData,
+          xImageMode,
+          xImagePickUrl,
+          xImageUploadData,
           confirmDuplicate,
           confirmUnverified,
         }),
@@ -519,7 +525,7 @@ export default function AdminPage() {
         setLoading(false);
         setToast(null);
         if (confirm(json.error)) {
-          await act(item, queue, action, text, reason, memo, target, imageMode, imagePickUrl, imageUploadData, confirmDuplicate, true);
+          await act(item, queue, action, text, reason, memo, target, imageMode, imagePickUrl, imageUploadData, xImageMode, xImagePickUrl, xImageUploadData, confirmDuplicate, true);
         } else {
           setToast({ kind: "error", text: "投稿を取りやめました。原文を確認してから文面を直してください" });
         }
@@ -531,7 +537,7 @@ export default function AdminPage() {
         setLoading(false);
         setToast(null);
         if (confirm(json.error)) {
-          await act(item, queue, action, text, reason, memo, target, imageMode, imagePickUrl, imageUploadData, true, confirmUnverified);
+          await act(item, queue, action, text, reason, memo, target, imageMode, imagePickUrl, imageUploadData, xImageMode, xImagePickUrl, xImageUploadData, true, confirmUnverified);
         } else {
           setToast({ kind: "error", text: "投稿を取りやめました" });
         }
@@ -1373,7 +1379,10 @@ function ReviewCard({
     target?: string,
     imageMode?: string,
     imagePickUrl?: string,
-    imageUploadData?: string
+    imageUploadData?: string,
+    xImageMode?: string,
+    xImagePickUrl?: string,
+    xImageUploadData?: string
   ) => void;
   onSplit: (item: QueuedItem, queue: "review" | "ready") => void;
   busy: boolean;
@@ -1397,6 +1406,14 @@ function ReviewCard({
   const [igData, setIgData] = useState("");
   const [igName, setIgName] = useState("");
   const [igErr, setIgErr] = useState("");
+  // X画像（IGとは別に選べる）
+  const [xImgMode, setXImgMode] = useState<"none" | "upload" | "pick">(
+    item.imageUrl ? "pick" : "none"
+  );
+  const [xImgPick, setXImgPick] = useState(item.imageUrl || "");
+  const [xImgData, setXImgData] = useState("");
+  const [xImgName, setXImgName] = useState("");
+  const [xImgErr, setXImgErr] = useState("");
   // IG は画像なしでは投稿できない
   const igNeedsImage =
     postTarget !== "x" &&
@@ -1536,131 +1553,141 @@ function ReviewCard({
           </button>
         </div>
 
-        <div style={{ fontSize: 13, fontWeight: 700, marginTop: 14 }}>投稿画像</div>
-        <div style={{ fontSize: 12, color: C.sub, marginTop: 2, lineHeight: 1.6 }}>
-          X と Instagram で同じ画像を使います。既定はプレス画像。
+        <div style={{ fontSize: 12, color: C.sub, marginTop: 14, lineHeight: 1.6 }}>
+          X と Instagram で別々の画像を選べます。既定はプレス画像。
           {postTarget !== "x" && " Instagram は画像が必須です。"}
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-          <button
-            onClick={() => {
-              setIgMode("none");
-              setIgErr("");
-            }}
-            style={igModeBtn(igMode === "none")}
-          >
-            画像なし
-          </button>
-          <button
-            onClick={() => {
-              setIgMode("upload");
-              setIgErr("");
-            }}
-            style={igModeBtn(igMode === "upload")}
-          >
-            画像をアップロード
-          </button>
-        </div>
-
-        {igCandidates.length > 0 ? (
-          <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>
-              候補から選ぶ（クリックで選択・記事本文とプレス画像から）
+        {/* ---- X画像 ---- */}
+        {postTarget !== "ig" && (
+          <>
+            <div style={{ fontSize: 13, fontWeight: 700, marginTop: 14 }}>X画像</div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <button onClick={() => { setXImgMode("none"); setXImgErr(""); }} style={igModeBtn(xImgMode === "none")}>
+                画像なし
+              </button>
+              <button onClick={() => { setXImgMode("upload"); setXImgErr(""); }} style={igModeBtn(xImgMode === "upload")}>
+                画像をアップロード
+              </button>
             </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {igCandidates.map((u) => {
-                const sel = igMode === "pick" && igPick === u;
-                return (
+            {igCandidates.length > 0 ? (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>
+                  候補から選ぶ
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {igCandidates.map((u) => {
+                    const sel = xImgMode === "pick" && xImgPick === u;
+                    return (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img key={u} src={u} alt=""
+                        onClick={() => { setXImgMode("pick"); setXImgPick(u); setXImgErr(""); }}
+                        style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 8, cursor: "pointer",
+                          border: `2px solid ${sel ? C.accent : C.border}`, opacity: sel ? 1 : 0.8, display: "block" }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8 }}>
+                候補画像なし（アップロードで指定できます）
+              </div>
+            )}
+            {xImgMode === "upload" && (
+              <div style={{ marginTop: 10 }}>
+                <input type="file" accept="image/*"
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    setXImgErr("");
+                    try { const d = await downscaleImage(f); setXImgData(d); setXImgName(f.name); }
+                    catch (err) { setXImgErr(err instanceof Error ? err.message : String(err)); setXImgData(""); setXImgName(""); }
+                  }}
+                  style={{ fontSize: 13, color: C.sub }}
+                />
+                {xImgName && <div style={{ fontSize: 12, color: C.sub, marginTop: 6 }}>選択中: {xImgName}</div>}
+                {xImgErr && <div style={{ fontSize: 12.5, color: C.danger, marginTop: 6 }}>⚠ {xImgErr}</div>}
+                {xImgData && (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    key={u}
-                    src={u}
-                    alt=""
-                    onClick={() => {
-                      setIgMode("pick");
-                      setIgPick(u);
-                      setIgErr("");
-                    }}
-                    style={{
-                      width: 84,
-                      height: 84,
-                      objectFit: "cover",
-                      borderRadius: 8,
-                      cursor: "pointer",
-                      border: `2px solid ${sel ? C.accent : C.border}`,
-                      opacity: sel ? 1 : 0.8,
-                      display: "block",
-                    }}
+                  <img src={xImgData} alt=""
+                    style={{ maxWidth: 180, maxHeight: 180, borderRadius: 8, marginTop: 8, display: "block", border: `1px solid ${C.border}` }}
                   />
-                );
-              })}
+                )}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ---- Instagram画像 ---- */}
+        {postTarget !== "x" && (
+          <>
+            <div style={{ fontSize: 13, fontWeight: 700, marginTop: 14 }}>Instagram画像</div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <button onClick={() => { setIgMode("none"); setIgErr(""); }} style={igModeBtn(igMode === "none")}>
+                画像なし
+              </button>
+              <button onClick={() => { setIgMode("upload"); setIgErr(""); }} style={igModeBtn(igMode === "upload")}>
+                画像をアップロード
+              </button>
             </div>
-          </div>
-        ) : (
-          <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8 }}>
-            候補画像なし（アップロードで指定できます）
-          </div>
-        )}
-
-        {igMode === "pick" && postTarget !== "x" && (
-          <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8 }}>
-            Instagram には選んだ画像を整えて投稿します（横長は見切れることがあります）。
-          </div>
-        )}
-        {igNeedsImage && (
-          <div style={{ fontSize: 12.5, color: C.danger, marginTop: 8 }}>
-            ⚠ Instagram に出すには画像が必要です
-          </div>
-        )}
-
-        {igMode === "upload" && (
-          <div style={{ marginTop: 10 }}>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={async (e) => {
-                const f = e.target.files?.[0];
-                if (!f) return;
-                setIgErr("");
-                try {
-                  const d = await downscaleImage(f);
-                  setIgData(d);
-                  setIgName(f.name);
-                } catch (err) {
-                  setIgErr(err instanceof Error ? err.message : String(err));
-                  setIgData("");
-                  setIgName("");
-                }
-              }}
-              style={{ fontSize: 13, color: C.sub }}
-            />
-            {igName && (
-              <div style={{ fontSize: 12, color: C.sub, marginTop: 6 }}>
-                選択中: {igName}
+            {igCandidates.length > 0 ? (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, color: C.sub, marginBottom: 6 }}>
+                  候補から選ぶ（クリックで選択・記事本文とプレス画像から）
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {igCandidates.map((u) => {
+                    const sel = igMode === "pick" && igPick === u;
+                    return (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img key={u} src={u} alt=""
+                        onClick={() => { setIgMode("pick"); setIgPick(u); setIgErr(""); }}
+                        style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 8, cursor: "pointer",
+                          border: `2px solid ${sel ? C.accent : C.border}`, opacity: sel ? 1 : 0.8, display: "block" }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8 }}>
+                候補画像なし（アップロードで指定できます）
               </div>
             )}
-            {igErr && (
-              <div style={{ fontSize: 12.5, color: C.danger, marginTop: 6 }}>
-                ⚠ {igErr}
+            {igMode === "pick" && (
+              <div style={{ fontSize: 12.5, color: C.sub, marginTop: 8 }}>
+                選んだ画像を中央クロップして投稿します。
               </div>
             )}
-            {igData && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={igData}
-                alt=""
-                style={{
-                  maxWidth: 180,
-                  maxHeight: 180,
-                  borderRadius: 8,
-                  marginTop: 8,
-                  display: "block",
-                  border: `1px solid ${C.border}`,
-                }}
-              />
+            {igNeedsImage && (
+              <div style={{ fontSize: 12.5, color: C.danger, marginTop: 8 }}>
+                ⚠ Instagram に出すには画像が必要です
+              </div>
             )}
-          </div>
+            {igMode === "upload" && (
+              <div style={{ marginTop: 10 }}>
+                <input type="file" accept="image/*"
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    setIgErr("");
+                    try { const d = await downscaleImage(f); setIgData(d); setIgName(f.name); }
+                    catch (err) { setIgErr(err instanceof Error ? err.message : String(err)); setIgData(""); setIgName(""); }
+                  }}
+                  style={{ fontSize: 13, color: C.sub }}
+                />
+                {igName && <div style={{ fontSize: 12, color: C.sub, marginTop: 6 }}>選択中: {igName}</div>}
+                {igErr && <div style={{ fontSize: 12.5, color: C.danger, marginTop: 6 }}>⚠ {igErr}</div>}
+                {igData && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={igData} alt=""
+                    style={{ maxWidth: 180, maxHeight: 180, borderRadius: 8, marginTop: 8, display: "block", border: `1px solid ${C.border}` }}
+                  />
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -1677,7 +1704,10 @@ function ReviewCard({
               postTarget,
               igMode,
               igMode === "pick" ? igPick : undefined,
-              igMode === "upload" ? igData : undefined
+              igMode === "upload" ? igData : undefined,
+              xImgMode,
+              xImgMode === "pick" ? xImgPick : undefined,
+              xImgMode === "upload" ? xImgData : undefined
             )
           }
           disabled={
